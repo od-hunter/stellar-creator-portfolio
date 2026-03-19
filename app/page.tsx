@@ -18,38 +18,35 @@ export default function Home() {
 
       <main className="flex-grow">
         {/* Hero Section */}
-        <section className="relative overflow-hidden">
-          {/* Background Elements */}
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
-          <div className="absolute top-0 right-0 w-96 h-96 bg-accent/10 rounded-full blur-3xl" />
-          <div className="absolute bottom-0 left-0 w-96 h-96 bg-primary/10 rounded-full blur-3xl" />
+        <section className="relative overflow-hidden border-b border-border">
+          {/* Minimal Background - Professional Look */}
+          <div className="absolute inset-0 bg-gradient-to-b from-primary/3 to-transparent" />
 
-          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 sm:py-32">
-            <div className="text-center">
-              {/* Badge */}
-              <div className="inline-flex items-center gap-2 px-4 py-2 bg-accent/20 rounded-full mb-6 border border-accent/30">
-                <Sparkles size={16} className="text-accent" />
-                <span className="text-sm font-medium text-accent">Welcome to Stellar</span>
-              </div>
+          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24 md:py-32">
+            <div className="text-center max-w-4xl mx-auto">
+              {/* Subtitle Badge */}
+              <p className="text-sm font-semibold text-primary mb-4 uppercase tracking-wide">
+                Creator Marketplace & Bounty Platform
+              </p>
 
               {/* Main Heading */}
-              <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold text-foreground mb-6 text-balance leading-tight">
-                Discover World-Class <span className="bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">Creators</span>
+              <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-foreground mb-6 text-balance leading-tight">
+                Connect with World-Class Creative Talent
               </h1>
 
               {/* Subheading */}
-              <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto text-balance">
-                The ultimate platform for non-technical tech talent. Find world-class creators, hire freelancers, and post bounties across 15+ disciplines.
+              <p className="text-base sm:text-lg text-muted-foreground mb-8 max-w-3xl mx-auto text-balance leading-relaxed">
+                Discover, hire, and collaborate with exceptional creators across design, writing, marketing, product management, and 10+ more disciplines. Post bounties, find freelancers, and build amazing projects.
               </p>
 
               {/* CTA Buttons */}
-              <div className="flex flex-col sm:flex-row gap-4 justify-center mb-12">
-                <Button size="lg" className="group" onClick={() => router.push('/creators')}>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center items-center sm:items-stretch mb-8">
+                <Button size="lg" className="w-full sm:w-auto" onClick={() => router.push('/creators')}>
                   Browse Creators
-                  <ArrowRight size={18} className="ml-2 group-hover:translate-x-1 transition-transform" />
+                  <ArrowRight size={18} className="ml-2" />
                 </Button>
-                <Button size="lg" variant="outline" onClick={() => router.push('/bounties')}>
-                  Explore Bounties
+                <Button size="lg" variant="outline" className="w-full sm:w-auto" onClick={() => router.push('/bounties')}>
+                  Post a Bounty
                 </Button>
               </div>
             </div>
@@ -57,53 +54,53 @@ export default function Home() {
         </section>
 
         {/* Stats Section */}
-        <section className="border-y border-border bg-muted/30 py-12">
+        <section className="py-12 sm:py-16 border-b border-border bg-muted/30">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
               <div className="text-center">
-                <div className="text-4xl sm:text-5xl font-bold text-primary mb-2">
+                <div className="text-3xl sm:text-4xl font-bold text-primary mb-2">
                   {creators.length}+
                 </div>
-                <p className="text-muted-foreground">Stellar Creators</p>
+                <p className="text-sm sm:text-base text-muted-foreground">Stellar Creators</p>
               </div>
               <div className="text-center">
-                <div className="text-4xl sm:text-5xl font-bold text-primary mb-2">
+                <div className="text-3xl sm:text-4xl font-bold text-primary mb-2">
                   {creators.reduce((sum, c) => sum + c.projects.length, 0)}+
                 </div>
-                <p className="text-muted-foreground">Incredible Projects</p>
+                <p className="text-sm sm:text-base text-muted-foreground">Incredible Projects</p>
               </div>
               <div className="text-center">
-                <div className="text-4xl sm:text-5xl font-bold text-primary mb-2">
+                <div className="text-3xl sm:text-4xl font-bold text-primary mb-2">
                   15+
                 </div>
-                <p className="text-muted-foreground">Non-Tech Disciplines</p>
+                <p className="text-sm sm:text-base text-muted-foreground">Non-Tech Disciplines</p>
               </div>
             </div>
           </div>
         </section>
 
         {/* Featured Creators Section */}
-        <section className="py-20 sm:py-32">
+        <section className="py-16 sm:py-24">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             {/* Section Header */}
-            <div className="text-center mb-12">
-              <h2 className="text-3xl sm:text-4xl font-bold text-foreground mb-4">
-                Featured Creators & Freelancers
+            <div className="text-center mb-12 sm:mb-16">
+              <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-foreground mb-3 sm:mb-4">
+                Featured Creators
               </h2>
-              <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                Discover exceptional talent across design, writing, marketing, product management, and more.
+              <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto">
+                Discover exceptional talent across 15+ disciplines. From UX design to community management.
               </p>
             </div>
 
             {/* Creators Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
               {featuredCreators.map((creator) => (
                 <CreatorCard key={creator.id} creator={creator} />
               ))}
             </div>
 
             {/* View All CTA */}
-            <div className="text-center mt-12">
+            <div className="text-center">
               <Button size="lg" variant="outline" className="group" onClick={() => router.push('/creators')}>
                 View All Creators
                 <ArrowRight size={18} className="ml-2 group-hover:translate-x-1 transition-transform" />
@@ -113,51 +110,54 @@ export default function Home() {
         </section>
 
         {/* Features Section */}
-        <section className="py-20 sm:py-32 bg-muted/30 border-y border-border">
+        <section className="py-16 sm:py-24 bg-muted/30 border-b border-border">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-12">
-              <h2 className="text-3xl sm:text-4xl font-bold text-foreground mb-4">
-                Why Join Stellar?
+            <div className="text-center mb-12 sm:mb-16">
+              <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-foreground mb-3">
+                Why Choose Stellar?
               </h2>
+              <p className="text-muted-foreground max-w-2xl mx-auto">
+                The platform built for non-technical talent in tech
+              </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
               {/* Feature 1 */}
-              <div className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition-all">
-                <div className="w-12 h-12 bg-primary/20 rounded-lg flex items-center justify-center mb-4">
-                  <Users size={24} className="text-primary" />
+              <div className="bg-card border border-border rounded-lg p-6 sm:p-8 hover:shadow-lg transition-all duration-300">
+                <div className="w-10 h-10 bg-primary/15 rounded-lg flex items-center justify-center mb-4">
+                  <Users size={20} className="text-primary" />
                 </div>
-                <h3 className="text-xl font-bold text-foreground mb-2">
+                <h3 className="text-lg sm:text-xl font-bold text-foreground mb-3">
                   Connect & Collaborate
                 </h3>
-                <p className="text-muted-foreground">
+                <p className="text-sm sm:text-base text-muted-foreground leading-relaxed">
                   Network with industry leaders and find perfect collaborators for your next project.
                 </p>
               </div>
 
               {/* Feature 2 */}
-              <div className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition-all">
-                <div className="w-12 h-12 bg-accent/20 rounded-lg flex items-center justify-center mb-4">
-                  <Target size={24} className="text-accent" />
+              <div className="bg-card border border-border rounded-lg p-6 sm:p-8 hover:shadow-lg transition-all duration-300">
+                <div className="w-10 h-10 bg-accent/15 rounded-lg flex items-center justify-center mb-4">
+                  <Target size={20} className="text-accent" />
                 </div>
-                <h3 className="text-xl font-bold text-foreground mb-2">
+                <h3 className="text-lg sm:text-xl font-bold text-foreground mb-3">
                   Bounty Opportunities
                 </h3>
-                <p className="text-muted-foreground">
+                <p className="text-sm sm:text-base text-muted-foreground leading-relaxed">
                   Participate in exclusive bounties and showcase your expertise to potential clients.
                 </p>
               </div>
 
               {/* Feature 3 */}
-              <div className="bg-card border border-border rounded-lg p-8 hover:shadow-lg transition-all">
-                <div className="w-12 h-12 bg-secondary/20 rounded-lg flex items-center justify-center mb-4">
-                  <Sparkles size={24} className="text-secondary" />
+              <div className="bg-card border border-border rounded-lg p-6 sm:p-8 hover:shadow-lg transition-all duration-300">
+                <div className="w-10 h-10 bg-secondary/15 rounded-lg flex items-center justify-center mb-4">
+                  <Sparkles size={20} className="text-secondary" />
                 </div>
-                <h3 className="text-xl font-bold text-foreground mb-2">
-                  World-Class Platform
+                <h3 className="text-lg sm:text-xl font-bold text-foreground mb-3">
+                  Premium Experience
                 </h3>
-                <p className="text-muted-foreground">
-                  Showcase your portfolio on a premium platform designed for creators.
+                <p className="text-sm sm:text-base text-muted-foreground leading-relaxed">
+                  Showcase your portfolio on a professional platform designed for creators.
                 </p>
               </div>
             </div>
@@ -165,18 +165,23 @@ export default function Home() {
         </section>
 
         {/* CTA Section */}
-        <section className="py-20 sm:py-32">
+        <section className="py-16 sm:py-24 border-t border-border">
           <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h2 className="text-3xl sm:text-4xl font-bold text-foreground mb-4">
-              Ready to Join the Creator Community?
+            <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-foreground mb-4 sm:mb-6">
+              Ready to Get Started?
             </h2>
-            <p className="text-lg text-muted-foreground mb-8">
-              Explore our directory of stellar creators and start your next amazing project.
+            <p className="text-base sm:text-lg text-muted-foreground mb-8 sm:mb-10 max-w-2xl mx-auto">
+              Join thousands of creators and clients finding perfect matches on Stellar.
             </p>
-            <Button size="lg" className="group" onClick={() => router.push('/creators')}>
-              Get Started
-              <ArrowRight size={18} className="ml-2 group-hover:translate-x-1 transition-transform" />
-            </Button>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center items-center sm:items-stretch">
+              <Button size="lg" className="w-full sm:w-auto" onClick={() => router.push('/creators')}>
+                Browse Creators
+                <ArrowRight size={18} className="ml-2" />
+              </Button>
+              <Button size="lg" variant="outline" className="w-full sm:w-auto" onClick={() => router.push('/bounties')}>
+                Post a Bounty
+              </Button>
+            </div>
           </div>
         </section>
       </main>
