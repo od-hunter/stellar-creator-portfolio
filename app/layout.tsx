@@ -3,6 +3,7 @@ import Script from 'next/script'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { ThemeProvider } from 'next-themes'
+import { Toaster } from '@/components/ui/sonner'
 import AnalyticsClient from './providers/AnalyticsClient'
 import './globals.css'
 
@@ -65,6 +66,7 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <AnalyticsClient plausibleDomain={PLAUSIBLE_DOMAIN} />
           {children}
+          <Toaster richColors closeButton position="top-right" />
           <Analytics />
         </ThemeProvider>
       </body>
