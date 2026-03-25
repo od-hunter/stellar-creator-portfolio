@@ -22,8 +22,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 futures.workspace = true
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
+dotenvy.workspace = true
