@@ -75,6 +75,27 @@ export type ApplicationInput = z.infer<typeof applicationSchema>
 export type ApplicationUpdateInput = z.infer<typeof applicationUpdateSchema>
 export type PaginationInput = z.infer<typeof paginationSchema>
 
+export const reviewSchema = z.object({
+  creatorId: z.string().min(1),
+  rating: z.number().int().min(1).max(5),
+  title: z.string().min(1).max(100),
+  body: z.string().min(10).max(2000),
+})
+
+export const reviewVoteSchema = z.object({
+  reviewId: z.string().min(1),
+  vote: z.enum(['helpful', 'not_helpful']),
+})
+
+export const reviewModerateSchema = z.object({
+  reviewId: z.string().min(1),
+  status: z.enum(['approved', 'rejected']),
+})
+
+export type ReviewInput = z.infer<typeof reviewSchema>
+export type ReviewVoteInput = z.infer<typeof reviewVoteSchema>
+export type ReviewModerateInput = z.infer<typeof reviewModerateSchema>
+
 export function validateRequest<T>(
   schema: z.ZodSchema<T>,
   data: unknown
