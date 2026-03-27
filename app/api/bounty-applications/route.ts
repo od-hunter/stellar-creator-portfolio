@@ -13,8 +13,8 @@ import {
   getApplicantCountsForBounties,
   clientCanManageBounty,
   pushNotification,
-} from '@/lib/bounty-service'
-import { getBountyById, bounties } from '@/lib/creators-data'
+} from '@/lib/services/bounty-service'
+import { getBountyById, bounties } from '@/lib/services/creators-data'
 import {
   sendApplicantReceivedEmail,
   sendClientNewApplicationEmail,

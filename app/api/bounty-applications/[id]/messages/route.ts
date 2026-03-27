@@ -7,8 +7,8 @@ import {
   addThreadMessage,
   listThreadMessages,
   canViewApplication,
-} from '@/lib/bounty-service'
-import { getBountyById } from '@/lib/creators-data'
+} from '@/lib/services/bounty-service'
+import { getBountyById } from '@/lib/services/creators-data'
 
 type RouteParams = { params: Promise<{ id: string }> }
 

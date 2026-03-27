@@ -5,7 +5,7 @@ import {
   listNotificationsForUser,
   markNotificationRead,
   markAllNotificationsRead,
-} from '@/lib/bounty-service'
+} from '@/lib/services/bounty-service'
 
 export async function GET() {
   const session = await getServerSession(authOptions)
