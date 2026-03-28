@@ -73,13 +73,21 @@ pub struct Evidence {
     pub submitted_at: u64,
 }
 
+// Storage type guidelines:
+// - Instance: Frequently accessed, contract-lifetime data (counters, active state)
+// - Persistent: Permanent records (bounties, applications, disputes, evidence)
+// - Temporary: Short-lived workflow data (not used here, but for future: pending approvals)
 #[contracttype]
 pub enum DataKey {
+    // Instance storage - frequently accessed counters
     BountyCounter,
     AppCounter,
+    // Persistent storage - permanent records
     Bounty(u64),
     Application(u64),
+    // Instance storage - active workflow state (cleared after completion)
     SelectedFreelancer(u64),
+    // Persistent storage - dispute records
     Dispute(u64),
     EvidenceList(u64),
 }
@@ -118,9 +126,10 @@ impl BountyContract {
     ) -> u64 {
         creator.require_auth();
 
+        // Use instance storage for frequently accessed counter
         let mut counter: u64 = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::BountyCounter)
             .unwrap_or(0);
         counter += 1;
@@ -136,11 +145,13 @@ impl BountyContract {
             created_at: env.ledger().timestamp(),
         };
 
+        // Persistent storage for permanent bounty record
         env.storage()
             .persistent()
             .set(&DataKey::Bounty(counter), &bounty);
+        // Instance storage for counter
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::BountyCounter, &counter);
 
         counter
@@ -189,9 +200,10 @@ impl BountyContract {
     ) -> u64 {
         freelancer.require_auth();
 
+        // Use instance storage for frequently accessed counter
         let mut counter: u64 = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::AppCounter)
             .unwrap_or(0);
         counter += 1;
@@ -206,11 +218,13 @@ impl BountyContract {
             created_at: env.ledger().timestamp(),
         };
 
+        // Persistent storage for permanent application record
         env.storage()
             .persistent()
             .set(&DataKey::Application(counter), &application);
+        // Instance storage for counter
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::AppCounter, &counter);
 
         counter
@@ -273,7 +287,8 @@ impl BountyContract {
             "Application does not match bounty"
         );
 
-        env.storage().persistent().set(
+        // Use instance storage for active workflow state
+        env.storage().instance().set(
             &DataKey::SelectedFreelancer(bounty_id),
             &application.freelancer,
         );
@@ -311,9 +326,10 @@ impl BountyContract {
 
         assert!(bounty.status == BountyStatus::InProgress, "Bounty not in progress");
 
+        // Use instance storage for active workflow state
         let freelancer: Address = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::SelectedFreelancer(bounty_id))
             .expect("No freelancer selected");
 
@@ -459,7 +475,7 @@ impl BountyContract {
         // Verify initiator is either creator or selected freelancer
         let selected_freelancer: Option<Address> = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::SelectedFreelancer(bounty_id));
 
         assert!(
@@ -541,7 +557,7 @@ impl BountyContract {
 
         let selected_freelancer: Option<Address> = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::SelectedFreelancer(bounty_id));
 
         // Verify submitter is either creator or selected freelancer
@@ -684,8 +700,9 @@ impl BountyContract {
     /// # Returns
     /// - `u64`: Number of bounties.
     pub fn get_bounties_count(env: Env) -> u64 {
+        // Instance storage for frequently accessed counter
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::BountyCounter)
             .unwrap_or(0)
     }
