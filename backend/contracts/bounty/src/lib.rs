@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec, Symbol};
 
 #[derive(Clone, Copy, PartialEq)]
 #[contracttype]
@@ -13,6 +13,7 @@ pub enum BountyStatus {
 }
 
 #[contracttype]
+#[derive(Clone)]
 pub struct Bounty {
     pub id: u64,
     pub creator: Address,
@@ -25,6 +26,7 @@ pub struct Bounty {
 }
 
 #[contracttype]
+#[derive(Clone)]
 pub struct BountyApplication {
     pub id: u64,
     pub bounty_id: u64,
@@ -77,8 +79,8 @@ impl BountyContract {
 
         let bounty = Bounty {
             id: counter,
-            creator,
-            title,
+            creator: creator.clone(),
+            title: title.clone(),
             description,
             budget,
             deadline,
@@ -88,6 +90,12 @@ impl BountyContract {
 
         env.storage().persistent().set(&DataKey::Bounty(counter), &bounty);
         env.storage().persistent().set(&DataKey::BountyCounter, &counter);
+
+        // Emit BountyCreated event
+        env.events().publish(
+            (Symbol::new(&env, "bounty_create"), counter),
+            (&title, budget, deadline),
+        );
 
         counter
     }
@@ -119,8 +127,8 @@ impl BountyContract {
         let application = BountyApplication {
             id: counter,
             bounty_id,
-            freelancer,
-            proposal,
+            freelancer: freelancer.clone(),
+            proposal: proposal.clone(),
             proposed_budget,
             timeline,
             created_at: env.ledger().timestamp(),
@@ -139,6 +147,12 @@ impl BountyContract {
         env.storage()
             .persistent()
             .set(&DataKey::BountyApplications(bounty_id), &app_ids);
+
+        // Emit BountyApplied event
+        env.events().publish(
+            (Symbol::new(&env, "bounty_apply"), bounty_id, counter),
+            (&freelancer, &proposal, proposed_budget),
+        );
 
         counter
     }
@@ -183,7 +197,7 @@ impl BountyContract {
     }
 
     pub fn select_freelancer(env: Env, bounty_id: u64, application_id: u64) -> bool {
-        let mut bounty: Bounty = env
+        let bounty: Bounty = env
             .storage()
             .persistent()
             .get(&DataKey::Bounty(bounty_id))
@@ -199,18 +213,26 @@ impl BountyContract {
 
         assert!(application.bounty_id == bounty_id, "Application does not match bounty");
 
+        let selected_freelancer = application.freelancer.clone();
         env.storage()
             .persistent()
-            .set(&DataKey::SelectedFreelancer(bounty_id), &application.freelancer);
+            .set(&DataKey::SelectedFreelancer(bounty_id), &selected_freelancer);
 
-        bounty.status = BountyStatus::InProgress;
-        env.storage().persistent().set(&DataKey::Bounty(bounty_id), &bounty);
+        let mut bounty_mut = bounty;
+        bounty_mut.status = BountyStatus::InProgress;
+        env.storage().persistent().set(&DataKey::Bounty(bounty_id), &bounty_mut);
+
+        // Emit BountySelected event
+        env.events().publish(
+            (Symbol::new(&env, "bounty_select"), bounty_id, application_id),
+            (&selected_freelancer,),
+        );
 
         true
     }
 
     pub fn complete_bounty(env: Env, bounty_id: u64) -> bool {
-        let mut bounty: Bounty = env
+        let bounty: Bounty = env
             .storage()
             .persistent()
             .get(&DataKey::Bounty(bounty_id))
@@ -219,14 +241,22 @@ impl BountyContract {
         bounty.creator.require_auth();
         assert!(bounty.status == BountyStatus::InProgress, "Bounty not in progress");
 
-        bounty.status = BountyStatus::Completed;
-        env.storage().persistent().set(&DataKey::Bounty(bounty_id), &bounty);
+        let creator = bounty.creator.clone();
+        let mut bounty_mut = bounty;
+        bounty_mut.status = BountyStatus::Completed;
+        env.storage().persistent().set(&DataKey::Bounty(bounty_id), &bounty_mut);
+
+        // Emit BountyCompleted event
+        env.events().publish(
+            (Symbol::new(&env, "bounty_complete"), bounty_id),
+            (&creator,),
+        );
 
         true
     }
 
     pub fn cancel_bounty(env: Env, bounty_id: u64) -> bool {
-        let mut bounty: Bounty = env
+        let bounty: Bounty = env
             .storage()
             .persistent()
             .get(&DataKey::Bounty(bounty_id))
@@ -235,8 +265,16 @@ impl BountyContract {
         bounty.creator.require_auth();
         assert!(bounty.status == BountyStatus::Open, "Only open bounties can be cancelled");
 
-        bounty.status = BountyStatus::Cancelled;
-        env.storage().persistent().set(&DataKey::Bounty(bounty_id), &bounty);
+        let creator = bounty.creator.clone();
+        let mut bounty_mut = bounty;
+        bounty_mut.status = BountyStatus::Cancelled;
+        env.storage().persistent().set(&DataKey::Bounty(bounty_id), &bounty_mut);
+
+        // Emit BountyCancelled event
+        env.events().publish(
+            (Symbol::new(&env, "bounty_cancel"), bounty_id),
+            (&creator,),
+        );
 
         true
     }
