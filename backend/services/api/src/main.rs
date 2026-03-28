@@ -1207,6 +1207,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(business_metrics.clone())
             .wrap(prometheus.clone())
             .wrap(Cors::permissive())
+            .wrap(middleware::Compress::default())
             .wrap(middleware::Logger::default())
             .wrap(middleware::NormalizePath::trim())
             .service(
