@@ -19,29 +19,55 @@ pub enum ProposalType {
 }
 
 #[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ProposalStatus {
     Pending = 0,
     Executed = 1,
     Rejected = 2,
 }
 
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct Proposal {
-    pub id: u64,
-    pub creator: Address,
-    pub prop_type: ProposalType,
-    pub status: ProposalStatus,
-    pub votes_for: u32,
-    pub votes_against: u32,
-    pub created_at: u64,
+// ── Events ───────────────────────────────────────────────────────────────────
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminAdded {
+    pub admin: Address,
+    pub owner: Address,
 }
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminRemoved {
+    pub admin: Address,
+    pub owner: Address,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalCreated {
+    pub proposal_id: u64,
+    pub creator: Address,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Voted {
+    pub proposal_id: u64,
+    pub voter: Address,
+    pub support: bool,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalExecuted {
+    pub proposal_id: u64,
+    pub status: u32,
+}
+
+// ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct GovernanceContract;
-
-const GOVERNANCE: Symbol = symbol_short!("governance");
 
 #[contractimpl]
 impl GovernanceContract {
@@ -66,8 +92,12 @@ impl GovernanceContract {
 		env.storage()
 			.persistent()
 			.set(&DataKey::Admin(admin.clone()), &true);
+		
 		// Event: admin added
-		env.events().publish((GOVERNANCE, symbol_short!("admin_added"), admin), (owner,));
+		env.events().publish(
+			(Symbol::new(&env, "governance"), Symbol::new(&env, "admin_added")),
+			AdminAdded { admin, owner },
+		);
 		true
 	}
 
@@ -83,7 +113,11 @@ impl GovernanceContract {
 			panic!("Only owner can remove admins");
 		}
 		env.storage().persistent().remove(&DataKey::Admin(admin.clone()));
-		env.events().publish((GOVERNANCE, symbol_short!("admin_removed"), admin), (owner,));
+		
+		env.events().publish(
+			(Symbol::new(&env, "governance"), Symbol::new(&env, "admin_removed")),
+			AdminRemoved { admin, owner },
+		);
 		true
 	}
 
@@ -124,8 +158,8 @@ impl GovernanceContract {
 		env.storage().persistent().set(&DataKey::ProposalCounter, &counter);
 
 		env.events().publish(
-			(GOVERNANCE, symbol_short!("prop_create"), counter),
-			(creator.clone(),),
+			(Symbol::new(&env, "governance"), Symbol::new(&env, "prop_create")),
+			ProposalCreated { proposal_id: counter, creator },
 		);
 
 		counter
@@ -165,8 +199,8 @@ impl GovernanceContract {
 		env.storage().persistent().set(&voted_key, &true);
 
 		env.events().publish(
-			(GOVERNANCE, symbol_short!("voted"), proposal_id),
-			(voter.clone(), support),
+			(Symbol::new(&env, "governance"), symbol_short!("voted")),
+			Voted { proposal_id, voter, support },
 		);
 
 		true
@@ -204,15 +238,15 @@ impl GovernanceContract {
 						.persistent()
 						.set(&DataKey::Admin(new_admin.clone()), &true);
 					env.events().publish(
-						(GOVERNANCE, symbol_short!("admin_added"), new_admin.clone()),
-						(Symbol::new(&env, "proposal"),),
+						(Symbol::new(&env, "governance"), Symbol::new(&env, "admin_added")),
+						AdminAdded { admin: new_admin.clone(), owner: caller.clone() },
 					);
 				}
 				ProposalType::RemoveAdmin(old_admin) => {
 					env.storage().persistent().remove(&DataKey::Admin(old_admin.clone()));
 					env.events().publish(
-						(GOVERNANCE, symbol_short!("admin_removed"), old_admin.clone()),
-						(Symbol::new(&env, "proposal"),),
+						(Symbol::new(&env, "governance"), Symbol::new(&env, "admin_removed")),
+						AdminRemoved { admin: old_admin.clone(), owner: caller.clone() },
 					);
 				}
 			}
@@ -223,8 +257,8 @@ impl GovernanceContract {
 		env.storage().persistent().set(&key, &proposal);
 
 		env.events().publish(
-			(GOVERNANCE, symbol_short!("prop_exec"), proposal_id),
-			(proposal.status as u32,),
+			(Symbol::new(&env, "governance"), Symbol::new(&env, "prop_exec")),
+			ProposalExecuted { proposal_id, status: proposal.status as u32 },
 		);
 
 		true
