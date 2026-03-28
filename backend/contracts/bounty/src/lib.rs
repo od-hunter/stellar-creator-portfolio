@@ -45,6 +45,7 @@ pub struct BountyApplication {
     pub proposed_budget: i128,
     pub timeline: u64,
     pub created_at: u64,
+    pub is_withdrawn: bool,
 }
 
 #[contracttype]
@@ -100,6 +101,8 @@ pub enum DataKey {
     // Persistent storage - application tracking for rate limiting
     ApplicationsPerBounty(u64),
     ApplicationsPerFreelancer(Address),
+    // Persistent storage - list of application IDs per bounty
+    BountyApplications(u64),
 }
 
 #[contract]
@@ -232,6 +235,7 @@ impl BountyContract {
             proposed_budget,
             timeline,
             created_at: env.ledger().timestamp(),
+            is_withdrawn: false,
         };
 
         // Persistent storage for permanent application record
@@ -279,6 +283,85 @@ impl BountyContract {
             .persistent()
             .get(&DataKey::Application(application_id))
             .expect("Application not found")
+    }
+
+    /// Allows a freelancer to withdraw their own pending application.
+    ///
+    /// Only the original applicant may withdraw, and only while the bounty is
+    /// still `Open` (i.e. before a freelancer has been selected / bounty moved
+    /// to `InProgress`). The application record is marked `is_withdrawn = true`
+    /// rather than deleted so that on-chain history is preserved.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `application_id`: ID of the application to withdraw.
+    /// - `freelancer`: Address of the applicant (must authenticate).
+    ///
+    /// # Returns
+    /// - `bool`: Always `true` on success.
+    ///
+    /// # Errors
+    /// - Panics with "Application not found" if `application_id` doesn't exist.
+    /// - Panics with "Not the application owner" if `freelancer` is not the
+    ///   original applicant.
+    /// - Panics with "Application already withdrawn" if already withdrawn.
+    /// - Panics with "Bounty not found" if the referenced bounty doesn't exist.
+    /// - Panics with "Cannot withdraw after freelancer has been selected" if the
+    ///   bounty is no longer `Open`.
+    ///
+    /// # State Changes
+    /// - Sets `application.is_withdrawn = true` on the stored application record.
+    pub fn withdraw_application(
+        env: Env,
+        application_id: u64,
+        freelancer: Address,
+    ) -> bool {
+        freelancer.require_auth();
+
+        // Load and validate the application
+        let mut application: BountyApplication = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Application(application_id))
+            .expect("Application not found");
+
+        // Ownership check — only the submitting freelancer may withdraw
+        assert!(
+            application.freelancer == freelancer,
+            "Not the application owner"
+        );
+
+        // Idempotency guard — prevent double-withdrawal
+        assert!(
+            !application.is_withdrawn,
+            "Application already withdrawn"
+        );
+
+        // State guard — cannot withdraw once a freelancer has been selected
+        let bounty: Bounty = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Bounty(application.bounty_id))
+            .expect("Bounty not found");
+
+        assert!(
+            bounty.status == BountyStatus::Open,
+            "Cannot withdraw after freelancer has been selected"
+        );
+
+        // Mark as withdrawn and persist
+        application.is_withdrawn = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Application(application_id), &application);
+
+        // Emit ApplicationWithdrawn event
+        env.events().publish(
+            (Symbol::new(&env, "app_withdraw"), application.bounty_id, application_id),
+            &freelancer,
+        );
+
+        true
     }
 
     /// Bounty creator selects a freelancer application.
@@ -1226,5 +1309,148 @@ mod tests {
             &freelancer,
             &String::from_str(&env, "Second dispute"),
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests for withdraw_application (Issue #164)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_withdraw_application_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(BountyContract, ());
+        let client = BountyContractClient::new(&env, &contract_id);
+
+        let creator = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let bounty_id = client.create_bounty(
+            &creator,
+            &String::from_str(&env, "Test Bounty"),
+            &String::from_str(&env, "Test Description"),
+            &5000i128,
+            &100u64,
+        );
+
+        let app_id = client.apply_for_bounty(
+            &bounty_id,
+            &freelancer,
+            &String::from_str(&env, "I can do this!"),
+            &4500i128,
+            &30u64,
+        );
+
+        // Application should not be withdrawn initially
+        let application = client.get_application(&app_id);
+        assert!(!application.is_withdrawn);
+
+        // Freelancer withdraws their application
+        let result = client.withdraw_application(&app_id, &freelancer);
+        assert!(result);
+
+        // Application should now be marked as withdrawn
+        let application = client.get_application(&app_id);
+        assert!(application.is_withdrawn);
+    }
+
+    #[test]
+    #[should_panic(expected = "Not the application owner")]
+    fn test_withdraw_application_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(BountyContract, ());
+        let client = BountyContractClient::new(&env, &contract_id);
+
+        let creator = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let bounty_id = client.create_bounty(
+            &creator,
+            &String::from_str(&env, "Test Bounty"),
+            &String::from_str(&env, "Test Description"),
+            &5000i128,
+            &100u64,
+        );
+
+        let app_id = client.apply_for_bounty(
+            &bounty_id,
+            &freelancer,
+            &String::from_str(&env, "I can do this!"),
+            &4500i128,
+            &30u64,
+        );
+
+        // Attacker tries to withdraw someone else's application
+        client.withdraw_application(&app_id, &attacker);
+    }
+
+    #[test]
+    #[should_panic(expected = "Application already withdrawn")]
+    fn test_withdraw_application_already_withdrawn() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(BountyContract, ());
+        let client = BountyContractClient::new(&env, &contract_id);
+
+        let creator = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let bounty_id = client.create_bounty(
+            &creator,
+            &String::from_str(&env, "Test Bounty"),
+            &String::from_str(&env, "Test Description"),
+            &5000i128,
+            &100u64,
+        );
+
+        let app_id = client.apply_for_bounty(
+            &bounty_id,
+            &freelancer,
+            &String::from_str(&env, "I can do this!"),
+            &4500i128,
+            &30u64,
+        );
+
+        // First withdrawal succeeds
+        client.withdraw_application(&app_id, &freelancer);
+
+        // Second withdrawal should panic
+        client.withdraw_application(&app_id, &freelancer);
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot withdraw after freelancer has been selected")]
+    fn test_withdraw_application_after_selection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(BountyContract, ());
+        let client = BountyContractClient::new(&env, &contract_id);
+
+        let creator = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let bounty_id = client.create_bounty(
+            &creator,
+            &String::from_str(&env, "Test Bounty"),
+            &String::from_str(&env, "Test Description"),
+            &5000i128,
+            &100u64,
+        );
+
+        let app_id = client.apply_for_bounty(
+            &bounty_id,
+            &freelancer,
+            &String::from_str(&env, "I can do this!"),
+            &4500i128,
+            &30u64,
+        );
+
+        // Creator selects the freelancer (bounty → InProgress)
+        client.select_freelancer(&bounty_id, &app_id);
+
+        // Withdrawal should now be blocked
+        client.withdraw_application(&app_id, &freelancer);
     }
 }
