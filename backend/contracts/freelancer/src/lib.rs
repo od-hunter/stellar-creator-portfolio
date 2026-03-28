@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String, Symbol, Vec};
 
 #[contracttype]
 pub struct FreelancerProfile {
@@ -28,13 +28,28 @@ pub enum DataKey {
     FreelancerCount,
     Profile(Address),
     AllFreelancers,
+    Governance,
+    Deployer,
 }
+
+// =============================================================================
+// SECURITY INVARIANTS (for formal verification / audit reference)
+// =============================================================================
+// INV-1: A freelancer address maps to at most one profile (duplicate registration
+//        returns false without overwriting).
+// INV-2: FreelancerCount equals the number of unique registered addresses.
+// INV-3: Rating is a running average; total_rating_count is monotonically increasing.
+// INV-4: verify_freelancer requires admin authentication; if a governance contract
+//        is configured, the caller must also pass the is_admin check there.
+// INV-5: set_governance_contract is restricted to the first setter (deployer),
+//        preventing governance hijacking after initial configuration.
+// =============================================================================
 
 #[contract]
 pub struct FreelancerContract;
 
 // Shared topic prefix for all freelancer events — allows indexers to filter by contract.
-const FREELANCER: Symbol = symbol_short!("freelancer");
+const FREELANCER: Symbol = symbol_short!("freelancr");
 
 #[contractimpl]
 impl FreelancerContract {
@@ -44,7 +59,7 @@ impl FreelancerContract {
     /// - `env`: Soroban environment.
     /// - `freelancer`: Freelancer address (must authenticate).
     /// - `name`: Freelancer's display name.
-    /// - `discipline`: Area of expertise (e.g., \"Rust Development\").
+    /// - `discipline`: Area of expertise (e.g., "Rust Development").
     /// - `bio`: Professional bio/description.
     ///
     /// # Returns
@@ -97,11 +112,11 @@ impl FreelancerContract {
 
         let count: u32 = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::FreelancerCount)
             .unwrap_or(0);
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::FreelancerCount, &(count + 1));
 
         // Event: freelancer registered
@@ -123,12 +138,12 @@ impl FreelancerContract {
     /// - `FreelancerProfile`: Complete profile data.
     ///
     /// # Errors
-    /// - Panics with \"Freelancer not registered\" if profile doesn't exist.
+    /// - Panics with "Freelancer not registered" if profile doesn't exist.
     pub fn get_profile(env: Env, freelancer: Address) -> FreelancerProfile {
         env.storage()
             .persistent()
             .get(&DataKey::Profile(freelancer))
-            .expect(\"Freelancer not registered\")
+            .expect("Freelancer not registered")
     }
 
     /// Updates freelancer's average rating with new review.
@@ -154,7 +169,7 @@ impl FreelancerContract {
             .storage()
             .persistent()
             .get(&key)
-            .expect(\"Freelancer not registered\");
+            .expect("Freelancer not registered");
 
         let total = (profile.rating as u64) * (profile.total_rating_count as u64);
         profile.total_rating_count += 1;
@@ -191,7 +206,7 @@ impl FreelancerContract {
             .storage()
             .persistent()
             .get(&key)
-            .expect(\"Freelancer not registered\");
+            .expect("Freelancer not registered");
 
         profile.completed_projects += 1;
         env.storage().persistent().set(&key, &profile);
@@ -216,7 +231,7 @@ impl FreelancerContract {
             .storage()
             .persistent()
             .get(&key)
-            .expect(\"Freelancer not registered\");
+            .expect("Freelancer not registered");
 
         profile.total_earnings += amount;
         env.storage().persistent().set(&key, &profile);
@@ -245,16 +260,16 @@ impl FreelancerContract {
         // contract recognizes as admins can verify freelancers. If no governance
         // contract is configured, fall back to the legacy behaviour (auth only).
         if let Some(gov) = env.storage().persistent().get::<DataKey, Address>(&DataKey::Governance) {
-                // Call governance contract's `is_admin` entrypoint. If it returns
-                // false, reject. We expect the governance contract to expose a
-                // method named `is_admin` that takes an Address and returns bool.
-                // If the governance contract is not present or doesn't expose the
-                // method, this will trap at runtime — that's intentional to make
-                // misconfiguration visible.
-                let is_admin: bool = env.invoke_contract(&gov, &symbol_short!("is_admin"), (admin.clone(),));
-                if !is_admin {
-                    panic!("Admin role required");
-                }
+            // Call governance contract's `is_admin` entrypoint. If it returns
+            // false, reject. We expect the governance contract to expose a
+            // method named `is_admin` that takes an Address and returns bool.
+            // If the governance contract is not present or doesn't expose the
+            // method, this will trap at runtime — that's intentional to make
+            // misconfiguration visible.
+            let args = soroban_sdk::vec![&env, admin.clone().into_val(&env)];
+            let is_admin: bool = env.invoke_contract(&gov, &symbol_short!("is_admin"), args);
+            if !is_admin {
+                panic!("Admin role required");
             }
         }
 
@@ -328,7 +343,7 @@ impl FreelancerContract {
     /// - `u32`: Count of freelancers.
     pub fn get_freelancers_count(env: Env) -> u32 {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::FreelancerCount)
             .unwrap_or(0)
     }
@@ -475,6 +490,7 @@ mod event_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::Env;
 
     #[test]
@@ -487,9 +503,9 @@ mod tests {
         let freelancer = Address::generate(&env);
         let result = client.register_freelancer(
             &freelancer,
-            &String::from_str(&env, \"Alice\"),
-            &String::from_str(&env, \"UI/UX Design\"),
-            &String::from_str(&env, \"Designer with 5 years experience\"),
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "UI/UX Design"),
+            &String::from_str(&env, "Designer with 5 years experience"),
         );
 
         assert!(result);
@@ -507,15 +523,15 @@ mod tests {
         let freelancer = Address::generate(&env);
         client.register_freelancer(
             &freelancer,
-            &String::from_str(&env, \"Alice\"),
-            &String::from_str(&env, \"Design\"),
-            &String::from_str(&env, \"Bio\"),
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
         );
         let second = client.register_freelancer(
             &freelancer,
-            &String::from_str(&env, \"Alice\"),
-            &String::from_str(&env, \"Design\"),
-            &String::from_str(&env, \"Bio\"),
+            &String::from_str(&env, "Alice"),
+            &String::from_str(&env, "Design"),
+            &String::from_str(&env, "Bio"),
         );
         assert!(!second);
     }
