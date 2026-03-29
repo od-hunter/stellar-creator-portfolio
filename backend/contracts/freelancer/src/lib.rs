@@ -1,5 +1,6 @@
 #![no_std]
 
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String, Symbol, Vec};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String, Symbol, Vec,
 };
@@ -59,6 +60,8 @@ pub enum DataKey {
 #[contract]
 pub struct FreelancerContract;
 
+// Shared topic prefix for all freelancer events — allows indexers to filter by contract.
+const FL: Symbol = symbol_short!("fl"); 
 const FL: Symbol = symbol_short!("fl");
 
 #[contractimpl]
@@ -219,6 +222,11 @@ impl FreelancerContract {
         profile.total_earnings += amount;
         env.storage().persistent().set(&key, &profile);
 
+        let new_total = profile.total_earnings;
+
+        env.events().publish(
+            (FL, symbol_short!("earnings"), freelancer),
+            (amount, new_total),
         env.events().publish(
             (FL, symbol_short!("earn"), freelancer),
             (amount, profile.total_earnings),
@@ -227,6 +235,14 @@ impl FreelancerContract {
         true
     }
 
+    /// Registers the trusted escrow contract address.
+    pub fn set_escrow_contract(env: Env, setter: Address, escrow: Address) -> bool {
+        setter.require_auth();
+
+        let maybe_deployer: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Deployer);
     /// Registers the trusted escrow contract address (deployer-locked).
     pub fn set_escrow_contract(env: Env, setter: Address, escrow: Address) -> bool {
         setter.require_auth();
@@ -255,6 +271,7 @@ impl FreelancerContract {
     pub fn verify_freelancer(env: Env, admin: Address, freelancer: Address) -> bool {
         admin.require_auth();
 
+        if let Some(gov) = env.storage().persistent().get::<DataKey, Address>(&DataKey::Governance) {
         if let Some(gov) =
             env.storage()
                 .persistent()
@@ -284,6 +301,11 @@ impl FreelancerContract {
         true
     }
 
+    /// Sets the governance contract address used for admin role checks.
+    pub fn set_governance_contract(env: Env, setter: Address, governance: Address) -> bool {
+        setter.require_auth();
+
+        let maybe_deployer: Option<Address> = env.storage().persistent().get(&DataKey::Deployer);
     /// Sets the governance contract address (deployer-locked).
     pub fn set_governance_contract(env: Env, setter: Address, governance: Address) -> bool {
         setter.require_auth();
@@ -295,6 +317,7 @@ impl FreelancerContract {
                 panic!("Only deployer may set governance contract");
             }
         } else {
+            env.storage().persistent().set(&DataKey::Deployer, &setter);
             env.storage()
                 .persistent()
                 .set(&DataKey::Deployer, &setter);
@@ -428,6 +451,8 @@ impl FreelancerContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Env;
     use soroban_sdk::{testutils::Address as _, Env};
 
     fn setup(env: &Env) -> (FreelancerContractClient, Address, Address) {
@@ -446,6 +471,36 @@ mod tests {
         let (client, _, _) = setup(&env);
         let freelancer = Address::generate(&env);
 
+        // Register
+        client.register_freelancer(&freelancer, &String::from_str(&env, "Alice"), &String::from_str(&env, "Design"), &String::from_str(&env, "Bio"));
+        
+        // Add skill
+        let skill = String::from_str(&env, "Rust");
+        client.add_skill(&freelancer, &skill);
+        assert_eq!(client.get_profile(&freelancer).skills.len(), 1);
+
+        // Update rating
+        client.update_rating(&freelancer, &5);
+        assert_eq!(client.get_profile(&freelancer).rating, 5);
+
+        // Verify
+        let admin = Address::generate(&env);
+        client.verify_freelancer(&admin, &freelancer);
+        assert!(client.is_verified(&freelancer));
+
+        // Query
+        let filters = FilterOptions {
+            discipline: None,
+            min_rating: Some(4),
+            verified_only: Some(true),
+            skill: Some(skill),
+        };
+        let result = client.query_freelancers(&filters);
+        assert_eq!(result.len(), 1);
+        
+        // Remove skill
+        client.remove_skill(&freelancer, &String::from_str(&env, "Rust"));
+        assert_eq!(client.get_profile(&freelancer).skills.len(), 0);
         assert!(client.register_freelancer(
             &freelancer,
             &String::from_str(&env, "Alice"),
@@ -463,12 +518,17 @@ mod tests {
         let (client, _, _) = setup(&env);
         let freelancer = Address::generate(&env);
 
+        client.set_escrow_contract(&deployer, &escrow);
+
         client.register_freelancer(
             &freelancer,
             &String::from_str(&env, "Alice"),
             &String::from_str(&env, "Design"),
             &String::from_str(&env, "Bio"),
         );
+
+        let result = client.update_earnings(&escrow, &freelancer, &500i128);
+        assert!(result);
         assert!(!client.register_freelancer(
             &freelancer,
             &String::from_str(&env, "Alice"),
@@ -513,6 +573,9 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
+        client.update_earnings(&escrow, &freelancer, &250i128);
+        let profile = client.get_profile(&freelancer);
+        assert_eq!(profile.total_earnings, 750i128);
         assert!(client.update_rating(&escrow, &freelancer, &500));
     }
 
@@ -554,6 +617,7 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
+        client.update_earnings(&attacker, &freelancer, &9999i128);
         client.update_rating(&attacker, &freelancer, &300);
     }
 
@@ -574,6 +638,7 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
+        client.update_earnings(&escrow, &freelancer, &100i128);
         client.update_rating(&caller, &freelancer, &300);
     }
 
@@ -595,6 +660,7 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
+        client.update_earnings(&escrow, &freelancer, &0i128);
         assert!(client.update_earnings(&escrow, &freelancer, &500));
         assert_eq!(client.get_profile(&freelancer).total_earnings, 500);
     }
@@ -615,6 +681,7 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
+        client.update_earnings(&escrow, &freelancer, &-100i128);
         client.update_earnings(&attacker, &freelancer, &9999);
     }
 
@@ -626,6 +693,9 @@ mod tests {
         let (client, _, escrow) = setup(&env);
         let freelancer = Address::generate(&env);
 
+        client.set_escrow_contract(&deployer, &escrow);
+
+        client.set_escrow_contract(&attacker, &new_escrow);
         client.register_freelancer(
             &freelancer,
             &String::from_str(&env, "Alice"),

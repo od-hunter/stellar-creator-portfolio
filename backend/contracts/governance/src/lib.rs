@@ -21,7 +21,7 @@ pub enum ProposalType {
 }
 
 #[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ProposalStatus {
     Pending = 0,
     Executed = 1,
@@ -53,10 +53,48 @@ pub struct Proposal {
 // INV-6: ProposalCounter is monotonically increasing; proposal IDs are unique.
 // =============================================================================
 
+// ── Events ───────────────────────────────────────────────────────────────────
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminAdded {
+    pub admin: Address,
+    pub owner: Address,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminRemoved {
+    pub admin: Address,
+    pub owner: Address,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalCreated {
+    pub proposal_id: u64,
+    pub creator: Address,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Voted {
+    pub proposal_id: u64,
+    pub voter: Address,
+    pub support: bool,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalExecuted {
+    pub proposal_id: u64,
+    pub status: u32,
+}
+
+// ── Contract ─────────────────────────────────────────────────────────────────
+
 #[contract]
 pub struct GovernanceContract;
-
-const GOVERNANCE: Symbol = symbol_short!("gov");
 
 #[contractimpl]
 impl GovernanceContract {
@@ -474,8 +512,9 @@ impl GovernanceContract {
 		env.storage()
 			.persistent()
 			.set(&DataKey::Admin(admin.clone()), &true);
+		
 		// Event: admin added
-		env.events().publish((GOVERNANCE, symbol_short!("adm_added"), admin), (owner,));
+		AdminAdded { admin, owner }.publish(&env);
 		true
 	}
 
@@ -491,7 +530,8 @@ impl GovernanceContract {
 			panic!("Only owner can remove admins");
 		}
 		env.storage().persistent().remove(&DataKey::Admin(admin.clone()));
-		env.events().publish((GOVERNANCE, symbol_short!("adm_rmvd"), admin), (owner,));
+		
+		AdminRemoved { admin, owner }.publish(&env);
 		true
 	}
 
@@ -508,7 +548,6 @@ impl GovernanceContract {
 	// -------------------------------------------------------------------------
 
 	/// Creates a new governance proposal.
-	/// Only an active admin can create a proposal.
 	pub fn create_proposal(env: Env, creator: Address, prop_type: ProposalType) -> u64 {
 		creator.require_auth();
 		if !Self::is_admin(env.clone(), creator.clone()) {
@@ -531,16 +570,12 @@ impl GovernanceContract {
 		env.storage().persistent().set(&DataKey::Proposal(counter), &proposal);
 		env.storage().instance().set(&DataKey::ProposalCounter, &counter);
 
-		env.events().publish(
-			(GOVERNANCE, symbol_short!("prop_crt"), counter),
-			(creator.clone(),),
-		);
+		ProposalCreated { proposal_id: counter, creator }.publish(&env);
 
 		counter
 	}
 
 	/// Cast a vote on a Pending proposal.
-	/// Only admins can vote. An admin can only vote once per proposal.
 	pub fn vote(env: Env, voter: Address, proposal_id: u64, support: bool) -> bool {
 		voter.require_auth();
 		if !Self::is_admin(env.clone(), voter.clone()) {
@@ -572,18 +607,12 @@ impl GovernanceContract {
 		env.storage().persistent().set(&key, &proposal);
 		env.storage().persistent().set(&voted_key, &true);
 
-		env.events().publish(
-			(GOVERNANCE, symbol_short!("voted"), proposal_id),
-			(voter.clone(), support),
-		);
+		Voted { proposal_id, voter, support }.publish(&env);
 
 		true
 	}
 
 	/// Executes a proposal.
-	/// Only admins can trigger execution, and the proposal must be Pending.
-	/// If `votes_for > votes_against` and `votes_for > 0`, it executes the specific State Change Action.
-	/// Otherwise, it marks the proposal as Rejected.
 	pub fn execute_proposal(env: Env, caller: Address, proposal_id: u64) -> bool {
 		caller.require_auth();
 		if !Self::is_admin(env.clone(), caller.clone()) {
@@ -611,17 +640,11 @@ impl GovernanceContract {
 					env.storage()
 						.persistent()
 						.set(&DataKey::Admin(new_admin.clone()), &true);
-					env.events().publish(
-						(GOVERNANCE, symbol_short!("adm_added"), new_admin.clone()),
-						(Symbol::new(&env, "proposal"),),
-					);
+					AdminAdded { admin: new_admin.clone(), owner: caller.clone() }.publish(&env);
 				}
 				ProposalType::RemoveAdmin(old_admin) => {
 					env.storage().persistent().remove(&DataKey::Admin(old_admin.clone()));
-					env.events().publish(
-						(GOVERNANCE, symbol_short!("adm_rmvd"), old_admin.clone()),
-						(Symbol::new(&env, "proposal"),),
-					);
+					AdminRemoved { admin: old_admin.clone(), owner: caller.clone() }.publish(&env);
 				}
 			}
 		} else {
@@ -630,10 +653,7 @@ impl GovernanceContract {
 
 		env.storage().persistent().set(&key, &proposal);
 
-		env.events().publish(
-			(GOVERNANCE, symbol_short!("prop_exec"), proposal_id),
-			(proposal.status as u32,),
-		);
+		ProposalExecuted { proposal_id, status: proposal.status as u32 }.publish(&env);
 
 		true
 	}
@@ -650,6 +670,108 @@ impl GovernanceContract {
 
 #[cfg(test)]
 mod tests {
+	use super::*;
+	use soroban_sdk::testutils::Address as _;
+	use soroban_sdk::Env;
+
+	#[test]
+	fn test_add_and_check_admin() {
+		let env = Env::default();
+		env.mock_all_auths();
+		let contract_id = env.register(GovernanceContract, ());
+		let client = GovernanceContractClient::new(&env, &contract_id);
+
+		let owner = Address::generate(&env);
+		// Initialize
+		assert!(client.init(&owner));
+
+		let admin = Address::generate(&env);
+		assert!(client.add_admin(&owner, &admin));
+		assert!(client.is_admin(&admin));
+
+		assert!(client.remove_admin(&owner, &admin));
+		assert!(!client.is_admin(&admin));
+	}
+
+	#[test]
+	fn test_proposal_lifecycle() {
+		let env = Env::default();
+		env.mock_all_auths();
+		let contract_id = env.register(GovernanceContract, ());
+		let client = GovernanceContractClient::new(&env, &contract_id);
+
+		let owner = Address::generate(&env);
+		let admin1 = Address::generate(&env);
+		let admin2 = Address::generate(&env);
+		let new_admin = Address::generate(&env);
+
+		// Initialize & setup admins
+		client.init(&owner);
+		client.add_admin(&owner, &admin1);
+		client.add_admin(&owner, &admin2);
+
+		// admin1 creates proposal to add new_admin
+		let prop_id = client.create_proposal(&admin1, &ProposalType::AddAdmin(new_admin.clone()));
+		assert_eq!(prop_id, 1);
+
+		let prop = client.get_proposal(&prop_id);
+		assert_eq!(prop.status, ProposalStatus::Pending);
+		assert_eq!(prop.votes_for, 0);
+
+		// admin1 votes FOR
+		assert!(client.vote(&admin1, &prop_id, &true));
+
+		let prop_after_vote = client.get_proposal(&prop_id);
+		assert_eq!(prop_after_vote.votes_for, 1);
+
+		// admin2 executes the proposal (1 vote for > 0 against)
+		assert!(client.execute_proposal(&admin2, &prop_id));
+
+		let prop_executed = client.get_proposal(&prop_id);
+		assert_eq!(prop_executed.status, ProposalStatus::Executed);
+
+		// Verify effect: new_admin is now an admin
+		assert!(client.is_admin(&new_admin));
+	}
+
+	#[test]
+	#[should_panic(expected = "Already voted")]
+	fn test_double_vote_panic() {
+		let env = Env::default();
+		env.mock_all_auths();
+		let contract_id = env.register(GovernanceContract, ());
+		let client = GovernanceContractClient::new(&env, &contract_id);
+
+		let owner = Address::generate(&env);
+		let admin = Address::generate(&env);
+		let new_admin = Address::generate(&env);
+
+		client.init(&owner);
+		client.add_admin(&owner, &admin);
+
+		let prop_id = client.create_proposal(&admin, &ProposalType::AddAdmin(new_admin.clone()));
+
+		client.vote(&admin, &prop_id, &true);
+		// Should panic here
+		client.vote(&admin, &prop_id, &true);
+	}
+
+	#[test]
+	#[should_panic(expected = "Only admins can create proposals")]
+	fn test_unauthorized_propose_panic() {
+		let env = Env::default();
+		env.mock_all_auths();
+		let contract_id = env.register(GovernanceContract, ());
+		let client = GovernanceContractClient::new(&env, &contract_id);
+
+		let owner = Address::generate(&env);
+		let rando = Address::generate(&env);
+		let new_admin = Address::generate(&env);
+
+		client.init(&owner);
+		// rando is NOT an admin
+		client.create_proposal(&rando, &ProposalType::AddAdmin(new_admin));
+	}
     use super::*;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::Env;
