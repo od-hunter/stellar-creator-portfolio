@@ -21,25 +21,181 @@ type MessagePayload = {
   metadata?: Record<string, unknown>;
 };
 
-/** Shape of raw messages received from WebSocket clients */
-type ClientMessage = {
-  type: string;
-  id?: string;
-  threadId?: string;
-  senderId?: string;
-  recipientId?: string;
-  ciphertext?: string;
-  iv?: string;
-  createdAt?: string;
-  attachment?: Attachment | null;
-  readBy?: string[];
-  metadata?: Record<string, unknown>;
-  userId?: string;
-  messageId?: string;
-  action?: string;
-  moderatorId?: string;
+// ---------------------------------------------------------------------------
+// Runtime validation helpers
+// ---------------------------------------------------------------------------
+
+type ValidationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string };
+
+const isString = (v: unknown): v is string => typeof v === "string";
+const isNonEmptyString = (v: unknown): v is string =>
+  isString(v) && v.trim().length > 0;
+const isStringArray = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every(isString);
+
+function validateAttachment(v: unknown): Attachment | null {
+  if (v == null) return null;
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  const a = v as Record<string, unknown>;
+  if (
+    isString(a.name) &&
+    isString(a.type) &&
+    typeof a.size === "number" &&
+    isString(a.data)
+  ) {
+    return { name: a.name, type: a.type, size: a.size, data: a.data };
+  }
+  return null;
+}
+
+// Validated shapes for each client message type
+type ValidatedSendMessage = {
+  type: "message";
+  id: string;
+  threadId: string;
+  senderId: string;
+  recipientId: string;
+  ciphertext: string;
+  iv: string;
+  createdAt: string;
+  attachment: Attachment | null;
+  readBy: string[];
+  metadata: Record<string, unknown>;
+};
+
+type ValidatedTyping = {
+  type: "typing";
+  userId: string;
+  threadId: string;
+};
+
+type ValidatedReadReceipt = {
+  type: "read-receipt";
+  messageId: string;
+  userId: string;
+};
+
+type ValidatedModerate = {
+  type: "moderate";
+  messageId: string;
+  action: "delete" | "flag";
+  moderatorId: string;
   reason?: string;
 };
+
+type ValidatedPing = { type: "ping" };
+
+type ValidatedClientMessage =
+  | ValidatedSendMessage
+  | ValidatedTyping
+  | ValidatedReadReceipt
+  | ValidatedModerate
+  | ValidatedPing;
+
+function validateClientMessage(
+  raw: unknown,
+): ValidationResult<ValidatedClientMessage> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, error: "Payload must be a JSON object" };
+  }
+
+  const obj = raw as Record<string, unknown>;
+
+  if (!isNonEmptyString(obj.type)) {
+    return { ok: false, error: "Missing or empty 'type' field" };
+  }
+
+  switch (obj.type) {
+    case "message": {
+      if (!isNonEmptyString(obj.senderId))
+        return { ok: false, error: "message: 'senderId' is required" };
+      if (!isNonEmptyString(obj.ciphertext))
+        return { ok: false, error: "message: 'ciphertext' is required" };
+      if (!isNonEmptyString(obj.iv))
+        return { ok: false, error: "message: 'iv' is required" };
+
+      const value: ValidatedSendMessage = {
+        type: "message",
+        id: isNonEmptyString(obj.id) ? obj.id : crypto.randomUUID(),
+        threadId: isNonEmptyString(obj.threadId) ? obj.threadId : "general",
+        senderId: obj.senderId,
+        recipientId: isNonEmptyString(obj.recipientId)
+          ? obj.recipientId
+          : "all",
+        ciphertext: obj.ciphertext,
+        iv: obj.iv,
+        createdAt: isNonEmptyString(obj.createdAt)
+          ? obj.createdAt
+          : new Date().toISOString(),
+        attachment: validateAttachment(obj.attachment),
+        readBy: isStringArray(obj.readBy) ? obj.readBy : [obj.senderId],
+        metadata:
+          typeof obj.metadata === "object" &&
+          obj.metadata !== null &&
+          !Array.isArray(obj.metadata)
+            ? (obj.metadata as Record<string, unknown>)
+            : {},
+      };
+      return { ok: true, value };
+    }
+
+    case "typing": {
+      if (!isNonEmptyString(obj.userId))
+        return { ok: false, error: "typing: 'userId' is required" };
+      if (!isNonEmptyString(obj.threadId))
+        return { ok: false, error: "typing: 'threadId' is required" };
+      return {
+        ok: true,
+        value: { type: "typing", userId: obj.userId, threadId: obj.threadId },
+      };
+    }
+
+    case "read-receipt": {
+      if (!isNonEmptyString(obj.messageId))
+        return { ok: false, error: "read-receipt: 'messageId' is required" };
+      if (!isNonEmptyString(obj.userId))
+        return { ok: false, error: "read-receipt: 'userId' is required" };
+      return {
+        ok: true,
+        value: {
+          type: "read-receipt",
+          messageId: obj.messageId,
+          userId: obj.userId,
+        },
+      };
+    }
+
+    case "moderate": {
+      if (!isNonEmptyString(obj.messageId))
+        return { ok: false, error: "moderate: 'messageId' is required" };
+      if (obj.action !== "delete" && obj.action !== "flag")
+        return {
+          ok: false,
+          error: "moderate: 'action' must be 'delete' or 'flag'",
+        };
+      if (!isNonEmptyString(obj.moderatorId))
+        return { ok: false, error: "moderate: 'moderatorId' is required" };
+      return {
+        ok: true,
+        value: {
+          type: "moderate",
+          messageId: obj.messageId,
+          action: obj.action,
+          moderatorId: obj.moderatorId,
+          reason: isString(obj.reason) ? obj.reason : undefined,
+        },
+      };
+    }
+
+    case "ping":
+      return { ok: true, value: { type: "ping" } };
+
+    default:
+      return { ok: false, error: `Unknown message type: '${obj.type}'` };
+  }
+}
 
 type ServerState = {
   clients: Set<WebSocket>;
@@ -129,55 +285,60 @@ const broadcast = (data: unknown) => {
 const handleMessageEvent = (socket: WebSocket, raw: string) => {
   const state = getState();
   try {
-    const parsed = JSON.parse(raw) as ClientMessage;
-    if (parsed.type === "message") {
+    const parsed: unknown = JSON.parse(raw);
+    const result = validateClientMessage(parsed);
+
+    if (!result.ok) {
+      socket.send(JSON.stringify({ type: "error", message: result.error }));
+      return;
+    }
+
+    const msg = result.value;
+
+    if (msg.type === "message") {
       const message: MessagePayload = {
-        id: parsed.id || crypto.randomUUID(),
-        threadId: parsed.threadId || "general",
-        senderId: parsed.senderId ?? "",
-        recipientId: parsed.recipientId || "all",
-        ciphertext: parsed.ciphertext ?? "",
-        iv: parsed.iv ?? "",
-        createdAt: parsed.createdAt || new Date().toISOString(),
-        attachment: parsed.attachment || null,
+        id: msg.id,
+        threadId: msg.threadId,
+        senderId: msg.senderId,
+        recipientId: msg.recipientId,
+        ciphertext: msg.ciphertext,
+        iv: msg.iv,
+        createdAt: msg.createdAt,
+        attachment: msg.attachment,
         status: "sent",
-        readBy: parsed.readBy || (parsed.senderId ? [parsed.senderId] : []),
-        metadata: parsed.metadata || {},
+        readBy: msg.readBy,
+        metadata: msg.metadata,
       };
       state.history.push(message);
       broadcast({ type: "message", data: message });
-    } else if (parsed.type === "typing") {
-      broadcast({
-        type: "typing",
-        userId: parsed.userId,
-        threadId: parsed.threadId,
-      });
-    } else if (parsed.type === "read-receipt") {
-      const { messageId, userId } = parsed;
-      state.history = state.history.map((msg) =>
-        msg.id === messageId
+    } else if (msg.type === "typing") {
+      broadcast({ type: "typing", userId: msg.userId, threadId: msg.threadId });
+    } else if (msg.type === "read-receipt") {
+      const { messageId, userId } = msg;
+      state.history = state.history.map((m) =>
+        m.id === messageId
           ? {
-              ...msg,
+              ...m,
               status: "read",
-              readBy: Array.from(
-                new Set([...(msg.readBy || []), ...(userId ? [userId] : [])]),
-              ),
+              readBy: Array.from(new Set([...(m.readBy || []), userId])),
             }
-          : msg,
+          : m,
       );
       broadcast({ type: "read-receipt", messageId, userId });
-    } else if (parsed.type === "moderate") {
-      const { messageId, action, moderatorId, reason } = parsed;
+    } else if (msg.type === "moderate") {
+      const { messageId, action, moderatorId, reason } = msg;
       if (action === "delete") {
         state.history = state.history.filter((m) => m.id !== messageId);
       }
       broadcast({ type: "moderated", messageId, action, moderatorId, reason });
-    } else if (parsed.type === "ping") {
+    } else if (msg.type === "ping") {
       socket.send(JSON.stringify({ type: "pong", ts: Date.now() }));
     }
   } catch (err) {
     console.error("Invalid payload", err);
-    socket.send(JSON.stringify({ type: "error", message: "Invalid payload" }));
+    socket.send(
+      JSON.stringify({ type: "error", message: "Invalid JSON payload" }),
+    );
   }
 };
 
@@ -241,20 +402,38 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json();
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const result = validateClientMessage(body);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: 400 });
+  }
+  if (result.value.type !== "message") {
+    return NextResponse.json(
+      { error: "POST only accepts 'message' type payloads" },
+      { status: 400 },
+    );
+  }
+
+  const msg = result.value;
   const state = getState();
   const message: MessagePayload = {
-    id: body.id || crypto.randomUUID(),
-    threadId: body.threadId || "general",
-    senderId: body.senderId,
-    recipientId: body.recipientId || "all",
-    ciphertext: body.ciphertext,
-    iv: body.iv,
+    id: msg.id,
+    threadId: msg.threadId,
+    senderId: msg.senderId,
+    recipientId: msg.recipientId,
+    ciphertext: msg.ciphertext,
+    iv: msg.iv,
     createdAt: new Date().toISOString(),
-    attachment: body.attachment || null,
+    attachment: msg.attachment,
     status: "sent",
-    readBy: [body.senderId],
-    metadata: body.metadata || {},
+    readBy: msg.readBy,
+    metadata: msg.metadata,
   };
   state.history.push(message);
   broadcast({ type: "message", data: message });
