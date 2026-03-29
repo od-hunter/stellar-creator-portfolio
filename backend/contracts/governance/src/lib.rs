@@ -17,6 +17,7 @@ pub enum DataKey {
     HasVoted(u64, Address),
     PlatformFee,
     Parameter(Symbol),
+    TimelockDelay,
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ pub enum ProposalStatus {
     Pending = 0,
     Executed = 1,
     Rejected = 2,
+    Queued = 3,
 }
 
 #[contracttype]
@@ -50,6 +52,9 @@ pub struct Proposal {
     pub votes_for: u32,
     pub votes_against: u32,
     pub created_at: u64,
+    /// Timestamp after which a Queued proposal may be executed.
+    /// Set to 0 for proposals that have not yet passed voting.
+    pub executable_after: u64,
 }
 
 // =============================================================================
@@ -63,6 +68,9 @@ pub struct Proposal {
 // INV-5: execute_proposal applies state changes only when votes_for > votes_against
 //        AND votes_for > 0; otherwise marks Rejected.
 // INV-6: ProposalCounter is monotonically increasing; proposal IDs are unique.
+// INV-7: execute_proposal uses a two-phase mechanism. First call (Pending→Queued)
+//        records executable_after = now + timelock_delay. Second call (Queued→Executed)
+//        verifies the current timestamp exceeds executable_after before applying changes.
 // =============================================================================
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -127,7 +135,17 @@ pub struct ParameterUpdatedEvent {
     pub caller: Address,
 }
 
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalQueuedEvent {
+    pub proposal_id: u64,
+    pub executable_after: u64,
+    pub queued_by: Address,
+}
+
 const GOVERNANCE: Symbol = symbol_short!("GOV");
+/// Default timelock delay (24 hours in seconds). Used when no custom delay is set.
+const DEFAULT_TIMELOCK_DELAY: u64 = 86_400;
 
 // ── Contract ─────────────────────────────────────────────────────────────────
 
@@ -272,6 +290,7 @@ impl GovernanceContract {
             votes_for: 0,
             votes_against: 0,
             created_at: env.ledger().timestamp(),
+            executable_after: 0,
         };
 
         env.storage()
@@ -351,10 +370,16 @@ impl GovernanceContract {
         true
     }
 
-    /// Executes a proposal.
-    /// Only admins can trigger execution, and the proposal must be Pending.
-    /// If `votes_for > votes_against` and `votes_for > 0`, it executes the specific State Change Action.
-    /// Otherwise, it marks the proposal as Rejected.
+    /// Executes or queues a proposal with mandatory timelock enforcement (Issue #198).
+    ///
+    /// **Two-phase mechanism:**
+    /// - **Phase 1 (Pending → Queued):** If `votes_for > votes_against && votes_for > 0`,
+    ///   the proposal is moved to `Queued` status and `executable_after` is set to
+    ///   `now + timelock_delay`. If votes do not pass, the proposal is immediately Rejected.
+    /// - **Phase 2 (Queued → Executed):** Once the timelock has elapsed, a second call
+    ///   applies the state change and marks the proposal Executed.
+    ///
+    /// This gives stakeholders time to react to approved changes before they take effect.
     pub fn execute_proposal(env: Env, caller: Address, proposal_id: u64) -> bool {
         caller.require_auth();
         if !Self::is_admin(env.clone(), caller.clone()) {
@@ -368,11 +393,43 @@ impl GovernanceContract {
             .get(&key)
             .expect("Proposal not found");
 
-        if proposal.status != ProposalStatus::Pending {
-            panic!("Proposal is not in Pending status");
+        let now = env.ledger().timestamp();
+
+        if proposal.status == ProposalStatus::Pending {
+            // Phase 1: determine outcome and either queue or reject
+            if proposal.votes_for > proposal.votes_against && proposal.votes_for > 0 {
+                let delay: u64 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::TimelockDelay)
+                    .unwrap_or(DEFAULT_TIMELOCK_DELAY);
+
+                proposal.executable_after = now + delay;
+                proposal.status = ProposalStatus::Queued;
+                env.storage().persistent().set(&key, &proposal);
+
+                env.events().publish(
+                    (GOVERNANCE, symbol_short!("prop_que"), proposal_id),
+                    (caller, proposal.executable_after),
+                );
+            } else {
+                proposal.status = ProposalStatus::Rejected;
+                env.storage().persistent().set(&key, &proposal);
+
+                env.events().publish(
+                    (GOVERNANCE, symbol_short!("prop_rej"), proposal_id),
+                    (proposal.votes_for, proposal.votes_against),
+                );
+            }
+            return true;
         }
 
-        if proposal.votes_for > proposal.votes_against && proposal.votes_for > 0 {
+        if proposal.status == ProposalStatus::Queued {
+            // Phase 2: enforce timelock and execute
+            if now < proposal.executable_after {
+                panic!("Timelock period has not elapsed");
+            }
+
             proposal.status = ProposalStatus::Executed;
 
             match &proposal.prop_type {
@@ -409,17 +466,49 @@ impl GovernanceContract {
                     );
                 }
             }
-        } else {
-            proposal.status = ProposalStatus::Rejected;
+
+            env.storage().persistent().set(&key, &proposal);
+            env.events().publish(
+                (GOVERNANCE, symbol_short!("prop_exec"), proposal_id),
+                (caller,),
+            );
+
+            return true;
         }
 
-        env.storage().persistent().set(&key, &proposal);
-        env.events().publish(
-            (GOVERNANCE, symbol_short!("prop_exec"), proposal_id),
-            (proposal.status as u32,),
-        );
+        panic!("Proposal is not in a executable state");
+    }
 
+    /// Sets the timelock delay (in seconds) that governs how long approved
+    /// proposals must wait before they can be executed. Only the owner may call this.
+    pub fn set_timelock_delay(env: Env, owner: Address, delay_seconds: u64) -> bool {
+        owner.require_auth();
+        let stored_owner: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Owner)
+            .expect("Governance not initialized");
+        if stored_owner != owner {
+            panic!("Only owner can set timelock delay");
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::TimelockDelay, &delay_seconds);
+
+        env.events().publish(
+            (GOVERNANCE, symbol_short!("tl_set"), delay_seconds),
+            (owner,),
+        );
         true
+    }
+
+    /// Returns the currently configured timelock delay in seconds.
+    pub fn get_timelock_delay(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TimelockDelay)
+            .unwrap_or(DEFAULT_TIMELOCK_DELAY)
     }
 
     /// Retrieves the full details of a proposal by ID.
@@ -598,11 +687,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Proposal lifecycle
+    // Proposal lifecycle (with timelock)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_proposal_lifecycle() {
+    fn test_proposal_lifecycle_with_timelock() {
         let t = TestEnv::new();
         let client = t.client();
         let admin1 = Address::generate(&t.env);
@@ -612,21 +701,24 @@ mod tests {
         client.add_admin(&t.owner, &admin1);
         client.add_admin(&t.owner, &admin2);
 
+        // Set zero timelock to simplify test
+        client.set_timelock_delay(&t.owner, &0u64);
+
         let prop_id = client.create_proposal(&admin1, &ProposalType::AddAdmin(new_admin.clone()));
         assert_eq!(prop_id, 1);
-        assert_eq!(
-            client.get_proposal(&prop_id).status,
-            ProposalStatus::Pending
-        );
+        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Pending);
 
         client.vote(&admin1, &prop_id, &true);
         assert_eq!(client.get_proposal(&prop_id).votes_for, 1);
 
+        // Phase 1: queue the proposal
         assert!(client.execute_proposal(&admin2, &prop_id));
-        assert_eq!(
-            client.get_proposal(&prop_id).status,
-            ProposalStatus::Executed
-        );
+        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Queued);
+        assert!(!client.is_admin(&new_admin)); // not yet applied
+
+        // Phase 2: execute after timelock (delay=0, so immediately eligible)
+        assert!(client.execute_proposal(&admin2, &prop_id));
+        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Executed);
         assert!(client.is_admin(&new_admin));
     }
 
@@ -678,7 +770,8 @@ mod tests {
         let gov_sym = symbol_short!("gov");
 
         client.add_admin(&t.owner, &admin);
-        
+        client.set_timelock_delay(&t.owner, &0u64);
+
         // 1. Proposal Created
         let prop_id = client.create_proposal(&admin, &ProposalType::AddAdmin(target.clone()));
         let events = t.env.events().all();
@@ -689,7 +782,12 @@ mod tests {
         let events = t.env.events().all();
         assert!(verify_gov_event(&t.env, &gov_sym, &symbol_short!("voted"), &events));
 
-        // 3. Executed
+        // 3. Queue (Phase 1)
+        client.execute_proposal(&admin, &prop_id);
+        let events = t.env.events().all();
+        assert!(verify_gov_event(&t.env, &gov_sym, &symbol_short!("prop_que"), &events));
+
+        // 4. Execute (Phase 2) — emits prop_exec
         client.execute_proposal(&admin, &prop_id);
         let events = t.env.events().all();
         assert!(verify_gov_event(&t.env, &gov_sym, &symbol_short!("prop_exec"), &events));
@@ -721,24 +819,115 @@ mod tests {
         assert_eq!(client.get_proposal(&prop_id2).votes_for, 1);
     }
 
+    // test_delegation_with_timelock is defined below in the typed proposals section
+
     #[test]
     fn test_typed_proposals() {
         let t = TestEnv::new();
         let client = t.client();
         let admin = Address::generate(&t.env);
         client.add_admin(&t.owner, &admin);
+        client.set_timelock_delay(&t.owner, &0u64);
 
-        // Fee Change
+        // Fee Change — two-phase with zero timelock
         let prop_id = client.create_proposal(&admin, &ProposalType::FeeChange(500));
         client.vote(&admin, &prop_id, &true);
-        client.execute_proposal(&admin, &prop_id);
+        client.execute_proposal(&admin, &prop_id); // queue
+        client.execute_proposal(&admin, &prop_id); // execute
         assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Executed);
 
         // Parameter Update
         let param = symbol_short!("limit");
         let prop_id2 = client.create_proposal(&admin, &ProposalType::ParameterUpdate(param.clone(), 100));
         client.vote(&admin, &prop_id2, &true);
-        client.execute_proposal(&admin, &prop_id2);
+        client.execute_proposal(&admin, &prop_id2); // queue
+        client.execute_proposal(&admin, &prop_id2); // execute
         assert_eq!(client.get_proposal(&prop_id2).status, ProposalStatus::Executed);
+    }
+
+    #[test]
+    fn test_delegation_with_timelock() {
+        let t = TestEnv::new();
+        let client = t.client();
+
+        let admin1 = Address::generate(&t.env);
+        let admin2 = Address::generate(&t.env);
+        let candidate = Address::generate(&t.env);
+
+        client.add_admin(&t.owner, &admin1);
+        client.add_admin(&t.owner, &admin2);
+        client.set_timelock_delay(&t.owner, &0u64);
+
+        client.delegate_vote(&admin2, &admin1);
+
+        let prop_id = client.create_proposal(&admin1, &ProposalType::AddAdmin(candidate.clone()));
+        client.vote(&admin1, &prop_id, &true);
+
+        let proposal = client.get_proposal(&prop_id);
+        assert_eq!(proposal.votes_for, 2);
+
+        client.execute_proposal(&admin1, &prop_id); // queue
+        client.execute_proposal(&admin1, &prop_id); // execute
+        assert!(client.is_admin(&candidate));
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #198 — Timelock tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_timelock_default_delay() {
+        let t = TestEnv::new();
+        let client = t.client();
+        assert_eq!(client.get_timelock_delay(), 86_400u64);
+    }
+
+    #[test]
+    fn test_set_timelock_delay() {
+        let t = TestEnv::new();
+        let client = t.client();
+        client.set_timelock_delay(&t.owner, &3600u64);
+        assert_eq!(client.get_timelock_delay(), 3600u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only owner can set timelock delay")]
+    fn test_set_timelock_delay_non_owner_panics() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let rando = Address::generate(&t.env);
+        client.set_timelock_delay(&rando, &0u64);
+    }
+
+    #[test]
+    fn test_rejected_proposal_skips_timelock() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+        // Leave default 24h timelock — rejected proposals skip it
+
+        let prop_id = client.create_proposal(&admin, &ProposalType::FeeChange(100));
+        // Vote against — proposal should be immediately Rejected on first execute call
+        client.vote(&admin, &prop_id, &false);
+        client.execute_proposal(&admin, &prop_id);
+        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Rejected);
+    }
+
+    #[test]
+    #[should_panic(expected = "Timelock period has not elapsed")]
+    fn test_execute_before_timelock_panics() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+        // Set a non-zero timelock
+        client.set_timelock_delay(&t.owner, &3600u64);
+
+        let prop_id = client.create_proposal(&admin, &ProposalType::FeeChange(200));
+        client.vote(&admin, &prop_id, &true);
+        client.execute_proposal(&admin, &prop_id); // queue (now + 3600s)
+        // Try to execute immediately — should panic because timelock hasn't elapsed
+        client.execute_proposal(&admin, &prop_id);
     }
 }
