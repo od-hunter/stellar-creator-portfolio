@@ -38,6 +38,7 @@ pub enum ProposalStatus {
     Pending = 0,
     Executed = 1,
     Rejected = 2,
+    Cancelled = 3,
 }
 
 #[contracttype]
@@ -125,6 +126,14 @@ pub struct ParameterUpdatedEvent {
     pub parameter: Symbol,
     pub new_value: u32,
     pub caller: Address,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalCancelledEvent {
+    pub proposal_id: u64,
+    pub cancelled_by: Address,
+    pub timestamp: u64,
 }
 
 const GOVERNANCE: Symbol = symbol_short!("GOV");
@@ -430,6 +439,43 @@ impl GovernanceContract {
             .expect("Proposal not found")
     }
 
+    // -------------------------------------------------------------------------
+    // Issue #196 — Proposal cancellation
+    // -------------------------------------------------------------------------
+
+    /// Cancels a Pending proposal before it is executed.
+    ///
+    /// Only the original proposer may cancel their own proposal.
+    /// Cancelled proposals cannot be voted on or executed.
+    pub fn cancel_proposal(env: Env, caller: Address, proposal_id: u64) -> bool {
+        caller.require_auth();
+
+        let key = DataKey::Proposal(proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Proposal not found");
+
+        if proposal.status != ProposalStatus::Pending {
+            panic!("Only Pending proposals can be cancelled");
+        }
+
+        if proposal.creator != caller {
+            panic!("Only the proposer can cancel their proposal");
+        }
+
+        proposal.status = ProposalStatus::Cancelled;
+        env.storage().persistent().set(&key, &proposal);
+
+        env.events().publish(
+            (GOVERNANCE, symbol_short!("prop_cxl"), proposal_id),
+            (caller, env.ledger().timestamp()),
+        );
+
+        true
+    }
+
     fn add_admin_internal(env: Env, admin: Address) {
         if Self::is_admin(env.clone(), admin.clone()) {
             return;
@@ -719,6 +765,70 @@ mod tests {
         let prop_id2 = client.create_proposal(&admin1, &ProposalType::AddAdmin(candidate));
         client.vote(&admin1, &prop_id2, &true);
         assert_eq!(client.get_proposal(&prop_id2).votes_for, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #196 — Proposal cancellation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cancel_proposal_by_proposer() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+
+        let prop_id = client.create_proposal(&admin, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Pending);
+
+        assert!(client.cancel_proposal(&admin, &prop_id));
+        assert_eq!(client.get_proposal(&prop_id).status, ProposalStatus::Cancelled);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the proposer can cancel their proposal")]
+    fn test_cancel_proposal_by_non_proposer_panics() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin1 = Address::generate(&t.env);
+        let admin2 = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin1);
+        client.add_admin(&t.owner, &admin2);
+
+        let prop_id = client.create_proposal(&admin1, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        // admin2 tries to cancel admin1's proposal
+        client.cancel_proposal(&admin2, &prop_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only Pending proposals can be cancelled")]
+    fn test_cancel_executed_proposal_panics() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+
+        let prop_id = client.create_proposal(&admin, &ProposalType::FeeChange(100));
+        client.vote(&admin, &prop_id, &true);
+        client.execute_proposal(&admin, &prop_id);
+        // Attempt to cancel after execution
+        client.cancel_proposal(&admin, &prop_id);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_vote_on_cancelled_proposal_panics() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin1 = Address::generate(&t.env);
+        let admin2 = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin1);
+        client.add_admin(&t.owner, &admin2);
+
+        let prop_id = client.create_proposal(&admin1, &ProposalType::FeeChange(200));
+        client.cancel_proposal(&admin1, &prop_id);
+        // Voting on a cancelled proposal should panic
+        client.vote(&admin2, &prop_id, &true);
     }
 
     #[test]
