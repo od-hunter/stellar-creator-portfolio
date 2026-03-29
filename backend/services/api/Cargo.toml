@@ -42,3 +42,4 @@ opentelemetry-otlp.workspace = true
 opentelemetry-semantic-conventions = "0.15"
 tracing-opentelemetry.workspace = true
 stellar-discovery = { path = "../discovery" }
+stellar-common = { path = "../common" }

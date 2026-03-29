@@ -28,3 +28,4 @@ opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry-semantic-conventions = "0.15"
 tracing-opentelemetry.workspace = true
+stellar-common = { path = "../common" }
