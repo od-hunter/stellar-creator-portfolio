@@ -38,10 +38,23 @@ pub struct Proposal {
     pub created_at: u64,
 }
 
+// =============================================================================
+// SECURITY INVARIANTS (for formal verification / audit reference)
+// =============================================================================
+// INV-1: Only the stored owner may add or remove admins.
+// INV-2: Only admins may create proposals or vote.
+// INV-3: An admin may vote at most once per proposal (HasVoted key enforces this).
+// INV-4: Proposal status transitions: Pending → Executed | Rejected only.
+//        Terminal states never revert.
+// INV-5: execute_proposal applies state changes only when votes_for > votes_against
+//        AND votes_for > 0; otherwise marks Rejected.
+// INV-6: ProposalCounter is monotonically increasing; proposal IDs are unique.
+// =============================================================================
+
 #[contract]
 pub struct GovernanceContract;
 
-const GOVERNANCE: Symbol = symbol_short!("governance");
+const GOVERNANCE: Symbol = symbol_short!("gov");
 
 #[contractimpl]
 impl GovernanceContract {
@@ -67,7 +80,7 @@ impl GovernanceContract {
 			.persistent()
 			.set(&DataKey::Admin(admin.clone()), &true);
 		// Event: admin added
-		env.events().publish((GOVERNANCE, symbol_short!("admin_added"), admin), (owner,));
+		env.events().publish((GOVERNANCE, symbol_short!("adm_added"), admin), (owner,));
 		true
 	}
 
@@ -83,7 +96,7 @@ impl GovernanceContract {
 			panic!("Only owner can remove admins");
 		}
 		env.storage().persistent().remove(&DataKey::Admin(admin.clone()));
-		env.events().publish((GOVERNANCE, symbol_short!("admin_removed"), admin), (owner,));
+		env.events().publish((GOVERNANCE, symbol_short!("adm_rmvd"), admin), (owner,));
 		true
 	}
 
@@ -107,7 +120,7 @@ impl GovernanceContract {
 			panic!("Only admins can create proposals");
 		}
 
-		let mut counter: u64 = env.storage().persistent().get(&DataKey::ProposalCounter).unwrap_or(0);
+		let mut counter: u64 = env.storage().instance().get(&DataKey::ProposalCounter).unwrap_or(0);
 		counter += 1;
 
 		let proposal = Proposal {
@@ -121,10 +134,10 @@ impl GovernanceContract {
 		};
 
 		env.storage().persistent().set(&DataKey::Proposal(counter), &proposal);
-		env.storage().persistent().set(&DataKey::ProposalCounter, &counter);
+		env.storage().instance().set(&DataKey::ProposalCounter, &counter);
 
 		env.events().publish(
-			(GOVERNANCE, symbol_short!("prop_create"), counter),
+			(GOVERNANCE, symbol_short!("prop_crt"), counter),
 			(creator.clone(),),
 		);
 
@@ -204,14 +217,14 @@ impl GovernanceContract {
 						.persistent()
 						.set(&DataKey::Admin(new_admin.clone()), &true);
 					env.events().publish(
-						(GOVERNANCE, symbol_short!("admin_added"), new_admin.clone()),
+						(GOVERNANCE, symbol_short!("adm_added"), new_admin.clone()),
 						(Symbol::new(&env, "proposal"),),
 					);
 				}
 				ProposalType::RemoveAdmin(old_admin) => {
 					env.storage().persistent().remove(&DataKey::Admin(old_admin.clone()));
 					env.events().publish(
-						(GOVERNANCE, symbol_short!("admin_removed"), old_admin.clone()),
+						(GOVERNANCE, symbol_short!("adm_rmvd"), old_admin.clone()),
 						(Symbol::new(&env, "proposal"),),
 					);
 				}
