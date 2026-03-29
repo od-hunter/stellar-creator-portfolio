@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String, Symbol, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -32,20 +32,34 @@ pub enum DataKey {
     FreelancerCount,
     Profile(Address),
     AllFreelancers,
-    // Governance / admin configuration
     Governance,
     Deployer,
     // Trusted escrow contract allowed to call update_earnings
     EscrowContract,
 }
 
+// =============================================================================
+// SECURITY INVARIANTS (for formal verification / audit reference)
+// =============================================================================
+// INV-1: A freelancer address maps to at most one profile (duplicate registration
+//        returns false without overwriting).
+// INV-2: FreelancerCount equals the number of unique registered addresses.
+// INV-3: Rating is a running average; total_rating_count is monotonically increasing.
+// INV-4: verify_freelancer requires admin authentication; if a governance contract
+//        is configured, the caller must also pass the is_admin check there.
+// INV-5: set_governance_contract is restricted to the first setter (deployer),
+//        preventing governance hijacking after initial configuration.
+// =============================================================================
+
 #[contract]
 pub struct FreelancerContract;
 
+// Shared topic prefix for all freelancer events — allows indexers to filter by contract.
 const FL: Symbol = symbol_short!("fl"); 
 
 #[contractimpl]
 impl FreelancerContract {
+    /// Registers a new freelancer profile.
     pub fn register_freelancer(
         env: Env,
         freelancer: Address,
@@ -87,10 +101,12 @@ impl FreelancerContract {
 
         let count: u32 = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::FreelancerCount)
             .unwrap_or(0);
-        env.storage().persistent().set(&DataKey::FreelancerCount, &(count + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::FreelancerCount, &(count + 1));
 
         env.events().publish(
             (FL, symbol_short!("reg"), freelancer),
@@ -100,11 +116,12 @@ impl FreelancerContract {
         true
     }
 
+    /// Retrieves freelancer profile.
     pub fn get_profile(env: Env, freelancer: Address) -> FreelancerProfile {
         env.storage()
             .persistent()
             .get(&DataKey::Profile(freelancer))
-            .expect("not found")
+            .expect("Freelancer not registered")
     }
 
     pub fn update_rating(env: Env, freelancer: Address, new_rating: u32) -> bool {
@@ -113,7 +130,7 @@ impl FreelancerContract {
             .storage()
             .persistent()
             .get(&key)
-            .expect("not found");
+            .expect("Freelancer not registered");
 
         let total = (profile.rating as u64) * (profile.total_rating_count as u64);
         profile.total_rating_count += 1;
@@ -130,16 +147,6 @@ impl FreelancerContract {
     }
 
     /// Increments freelancer's completed projects count.
-    ///
-    /// # Parameters
-    /// - `env`: Soroban environment.
-    /// - `freelancer`: Target freelancer.
-    ///
-    /// # Returns
-    /// - `bool`: Always `true`.
-    ///
-    /// # Errors
-    /// - Panics if freelancer not registered.
     pub fn update_completed_projects(env: Env, freelancer: Address) -> bool {
         let key = DataKey::Profile(freelancer);
         let mut profile: FreelancerProfile = env
@@ -154,48 +161,19 @@ impl FreelancerContract {
     }
 
     /// Adds to freelancer's total earnings.
-    ///
-    /// **Restricted:** Only the registered escrow contract may call this
-    /// function. Call `set_escrow_contract` once after deployment to configure
-    /// the trusted escrow address. Any other caller will be rejected.
-    ///
-    /// # Parameters
-    /// - `env`: Soroban environment.
-    /// - `escrow`: The escrow contract address (must authenticate).
-    /// - `freelancer`: Target freelancer.
-    /// - `amount`: Earnings amount to add. Must be positive (> 0).
-    ///
-    /// # Returns
-    /// - `bool`: Always `true` on success.
-    ///
-    /// # Errors
-    /// - Panics with "Escrow contract not configured" if no escrow address is
-    ///   registered yet.
-    /// - Panics with "Unauthorized: only escrow contract may update earnings"
-    ///   if `escrow` is not the registered escrow contract.
-    /// - Panics with "Amount must be positive" if `amount` <= 0.
-    /// - Panics with "Freelancer not registered" if the freelancer profile
-    ///   does not exist.
-    ///
-    /// # State Changes
-    /// - Increments `profile.total_earnings` by `amount`.
     pub fn update_earnings(env: Env, escrow: Address, freelancer: Address, amount: i128) -> bool {
-        // Require the escrow contract to sign this transaction
         escrow.require_auth();
 
-        // Load and validate the configured escrow contract address
         let registered_escrow: Address = env
             .storage()
             .persistent()
             .get(&DataKey::EscrowContract)
             .expect("Escrow contract not configured");
 
-        // Reject if the caller is not the trusted escrow contract
         if escrow != registered_escrow {
             panic!("Unauthorized: only escrow contract may update earnings");
         }
 
-        // Reject non-positive amounts to prevent earnings manipulation
         if amount <= 0 {
             panic!("Amount must be positive");
         }
@@ -212,7 +190,6 @@ impl FreelancerContract {
 
         let new_total = profile.total_earnings;
 
-        // Emit EarningsUpdated event
         env.events().publish(
             (FL, symbol_short!("earnings"), freelancer),
             (amount, new_total),
@@ -222,28 +199,9 @@ impl FreelancerContract {
     }
 
     /// Registers the trusted escrow contract address.
-    ///
-    /// Only the deployer (first caller of this function) may set or update
-    /// the escrow contract address, using the same deployer-lock pattern as
-    /// `set_governance_contract`.
-    ///
-    /// # Parameters
-    /// - `env`: Soroban environment.
-    /// - `setter`: Address calling this function (must authenticate).
-    /// - `escrow`: The escrow contract address that will be allowed to call
-    ///   `update_earnings`.
-    ///
-    /// # Returns
-    /// - `bool`: Always `true`.
-    ///
-    /// # Errors
-    /// - Panics with "Only deployer may set escrow contract" if called by an
-    ///   address other than the first setter.
     pub fn set_escrow_contract(env: Env, setter: Address, escrow: Address) -> bool {
         setter.require_auth();
 
-        // Reuse the same deployer slot as set_governance_contract so both
-        // functions share a single deployer identity.
         let maybe_deployer: Option<Address> = env
             .storage()
             .persistent()
@@ -267,31 +225,13 @@ impl FreelancerContract {
     }
 
     /// Admin verifies freelancer (sets verified flag).
-    ///
-    /// # Parameters
-    /// - `env`: Soroban environment.
-    /// - `admin`: Admin address (must authenticate).
-    /// - `freelancer`: Target freelancer.
-    ///
-    /// # Returns
-    /// - `bool`: Always `true`.
-    ///
-    /// # Errors
-    /// - Panics if admin fails authentication.
-    /// - Panics if freelancer not registered.
     pub fn verify_freelancer(env: Env, admin: Address, freelancer: Address) -> bool {
-        // Require the caller to authenticate as the admin address passed in.
         admin.require_auth();
 
-        // If a governance contract is configured, delegate the admin-role check to it.
-        // This keeps verification meaningful: only addresses that the governance
-        // contract recognizes as admins can verify freelancers. If no governance
-        // contract is configured, fall back to the legacy behaviour (auth only).
         if let Some(gov) = env.storage().persistent().get::<DataKey, Address>(&DataKey::Governance) {
-            // Call governance contract's `is_admin` entrypoint. If it returns
-            // false, reject. We expect the governance contract to expose a
-            // method named `is_admin` that takes an Address and returns bool.
-            if !env.invoke_contract::<bool>(&gov, &symbol_short!("is_admin"), (admin.clone(),)) {
+            let args = soroban_sdk::vec![&env, admin.clone().into_val(&env)];
+            let is_admin: bool = env.invoke_contract(&gov, &symbol_short!("is_admin"), args);
+            if !is_admin {
                 panic!("Admin role required");
             }
         }
@@ -315,22 +255,15 @@ impl FreelancerContract {
     }
 
     /// Sets the governance contract address used for admin role checks.
-    /// Can be called by any address that authenticates; this is intentionally
-    /// permissive to allow initial configuration. Operators should set this
-    /// to the governance contract address and then manage admin roles via the
-    /// governance contract itself.
     pub fn set_governance_contract(env: Env, setter: Address, governance: Address) -> bool {
         setter.require_auth();
 
-        // If deployer not set yet, record the first setter as the deployer.
         let maybe_deployer: Option<Address> = env.storage().persistent().get(&DataKey::Deployer);
         if let Some(deployer) = maybe_deployer {
-            // Only the recorded deployer can change the governance address
             if deployer != setter {
                 panic!("Only deployer may set governance contract");
             }
         } else {
-            // Record the setter as deployer on first-time configuration
             env.storage().persistent().set(&DataKey::Deployer, &setter);
         }
 
@@ -341,13 +274,6 @@ impl FreelancerContract {
     }
 
     /// Checks if freelancer is verified.
-    ///
-    /// # Parameters
-    /// - `env`: Soroban environment.
-    /// - `freelancer`: Freelancer address.
-    ///
-    /// # Returns
-    /// - `bool`: `true` if verified, `false` if not registered or unverified.
     pub fn is_verified(env: Env, freelancer: Address) -> bool {
         env.storage()
             .persistent()
@@ -358,7 +284,7 @@ impl FreelancerContract {
 
     pub fn get_freelancers_count(env: Env) -> u32 {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::FreelancerCount)
             .unwrap_or(0)
     }
@@ -458,7 +384,8 @@ impl FreelancerContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{Env, testutils::Address as _};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Env;
 
     #[test]
     fn test_full_workflow() {
@@ -500,10 +427,6 @@ mod tests {
         assert_eq!(client.get_profile(&freelancer).skills.len(), 0);
     }
 
-    // -------------------------------------------------------------------------
-    // Tests for update_earnings authorization (Issue #190)
-    // -------------------------------------------------------------------------
-
     #[test]
     fn test_update_earnings_success() {
         let env = Env::default();
@@ -515,10 +438,8 @@ mod tests {
         let escrow = Address::generate(&env);
         let freelancer = Address::generate(&env);
 
-        // Configure trusted escrow contract
         client.set_escrow_contract(&deployer, &escrow);
 
-        // Register freelancer
         client.register_freelancer(
             &freelancer,
             &String::from_str(&env, "Alice"),
@@ -526,14 +447,12 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
-        // Escrow updates earnings
         let result = client.update_earnings(&escrow, &freelancer, &500i128);
         assert!(result);
 
         let profile = client.get_profile(&freelancer);
         assert_eq!(profile.total_earnings, 500i128);
 
-        // Second update accumulates
         client.update_earnings(&escrow, &freelancer, &250i128);
         let profile = client.get_profile(&freelancer);
         assert_eq!(profile.total_earnings, 750i128);
@@ -560,7 +479,6 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
-        // Attacker tries to inflate earnings
         client.update_earnings(&attacker, &freelancer, &9999i128);
     }
 
@@ -582,7 +500,6 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
-        // No escrow configured yet — should panic
         client.update_earnings(&escrow, &freelancer, &100i128);
     }
 
@@ -606,7 +523,6 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
-        // Zero amount should be rejected
         client.update_earnings(&escrow, &freelancer, &0i128);
     }
 
@@ -630,7 +546,6 @@ mod tests {
             &String::from_str(&env, "Bio"),
         );
 
-        // Negative amount (attempting to reduce earnings) should be rejected
         client.update_earnings(&escrow, &freelancer, &-100i128);
     }
 
@@ -647,10 +562,8 @@ mod tests {
         let attacker = Address::generate(&env);
         let new_escrow = Address::generate(&env);
 
-        // Deployer sets the escrow contract
         client.set_escrow_contract(&deployer, &escrow);
 
-        // Attacker tries to replace the escrow with their own address
         client.set_escrow_contract(&attacker, &new_escrow);
     }
 }
