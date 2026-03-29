@@ -1,8 +1,3 @@
-To resolve these conflicts, I have merged the **Weighted Voting** features (Reputation and Tokens) from my branch with the **Fee & Parameter** updates from the `main` branch. 
-
-**This is the complete, multi-featured Governance contract. You can copy and paste this entire file:**
-
-```rust
 #![no_std]
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, Symbol, Vec};
@@ -56,7 +51,7 @@ pub enum ProposalType {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ProposalStatus {
     Pending = 0,
     Executed = 1,
@@ -174,7 +169,7 @@ impl GovernanceContract {
         Self::add_admin_internal(env.clone(), admin.clone());
         env.events().publish(
             (GOV, symbol_short!("adm_add")),
-            AdminAddedEvent { admin, added_by: owner, timestamp: env.ledger().timestamp() },
+            (admin, owner, env.ledger().timestamp()),
         );
         true
     }
@@ -187,7 +182,7 @@ impl GovernanceContract {
         Self::remove_admin_internal(env.clone(), admin.clone());
         env.events().publish(
             (GOV, symbol_short!("adm_rm")),
-            AdminRemovedEvent { admin, removed_by: owner, timestamp: env.ledger().timestamp() },
+            (admin, owner, env.ledger().timestamp()),
         );
         true
     }
@@ -228,7 +223,7 @@ impl GovernanceContract {
 
         env.events().publish(
             (GOV, symbol_short!("prop_new")),
-            ProposalCreatedEvent { proposal_id: counter, proposer: creator, timestamp: env.ledger().timestamp() },
+            (counter, creator, env.ledger().timestamp()),
         );
         counter
     }
@@ -247,12 +242,12 @@ impl GovernanceContract {
         
         for admin in admins.iter() {
             let voted_key = DataKey::HasVoted(proposal_id, admin.clone());
-            if !env.storage().exclusive().has(&voted_key) {
+            if !env.storage().persistent().has(&voted_key) {
                 let final_delegate = Self::resolve_final_delegate(env.clone(), admin.clone(), admins.len() + 1);
                 if final_delegate == voter {
                     let weight = Self::get_voter_weight(env.clone(), admin.clone());
                     total_weight += weight;
-                    env.storage().exclusive().set(&voted_key, &true);
+                    env.storage().persistent().set(&voted_key, &true);
                 }
             }
         }
@@ -265,7 +260,7 @@ impl GovernanceContract {
         env.storage().persistent().set(&key, &proposal);
         env.events().publish(
             (GOV, symbol_short!("voted")),
-            VoteCastEvent { proposal_id, voter, support, weight: total_weight, timestamp: env.ledger().timestamp() },
+            (proposal_id, voter, support, total_weight, env.ledger().timestamp()),
         );
         true
     }
@@ -290,14 +285,7 @@ impl GovernanceContract {
         env.storage().persistent().set(&key, &proposal);
         env.events().publish(
             (GOV, symbol_short!("prop_exc")),
-            ProposalExecutedEvent { 
-                proposal_id, 
-                executor: caller, 
-                status: proposal.status.clone() as u32, 
-                votes_for: proposal.votes_for, 
-                votes_against: proposal.votes_against, 
-                timestamp: env.ledger().timestamp() 
-            },
+            (proposal_id, caller, (proposal.status as u32), proposal.votes_for, proposal.votes_against, env.ledger().timestamp()),
         );
         true
     }
@@ -357,7 +345,7 @@ impl GovernanceContract {
         let mut current = delegatee;
         for _ in 0..(Self::admin_list(env.clone()).len() + 1) {
             if current == delegator { panic!("Cycle"); }
-            match env.storage().persistent().get(&DataKey::Delegate(current.clone())) {
+            match env.storage().persistent().get::<DataKey, Address>(&DataKey::Delegate(current.clone())) {
                 Some(next) => current = next,
                 None => return,
             }
@@ -368,7 +356,7 @@ impl GovernanceContract {
     fn resolve_final_delegate(env: Env, start: Address, max_hops: u32) -> Address {
         let mut current = start;
         for _ in 0..max_hops {
-            match env.storage().persistent().get(&DataKey::Delegate(current.clone())) {
+            match env.storage().persistent().get::<DataKey, Address>(&DataKey::Delegate(current.clone())) {
                 Some(next) => {
                     if !Self::is_admin(env.clone(), next.clone()) { return current; }
                     current = next;
@@ -379,4 +367,188 @@ impl GovernanceContract {
         panic!("Cycle");
     }
 }
-```
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Env;
+
+    struct TestEnv {
+        env: Env,
+        owner: Address,
+        contract_id: Address,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register(GovernanceContract, ());
+            let owner = Address::generate(&env);
+            GovernanceContractClient::new(&env, &contract_id).init(&owner);
+            TestEnv { env, owner, contract_id }
+        }
+
+        fn client(&self) -> GovernanceContractClient {
+            GovernanceContractClient::new(&self.env, &self.contract_id)
+        }
+    }
+
+    #[test]
+    fn test_init_and_admin() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+        assert!(client.is_admin(&admin));
+    }
+
+    #[contract]
+    pub struct MockFreelancer;
+
+    #[contractimpl]
+    impl MockFreelancer {
+        pub fn get_profile(env: Env, addr: Address) -> FreelancerProfile {
+            FreelancerProfile {
+                address: addr,
+                name: soroban_sdk::String::from_str(&env, "Mock"),
+                discipline: soroban_sdk::String::from_str(&env, "Mock"),
+                bio: soroban_sdk::String::from_str(&env, "Mock"),
+                rating: 500,
+                total_rating_count: 1,
+                completed_projects: 10,
+                total_earnings: 20_000_000,
+                verified: true,
+                created_at: 0,
+                skills: soroban_sdk::Vec::new(&env),
+            }
+        }
+    }
+
+    #[contract]
+    pub struct MockToken;
+
+    #[contractimpl]
+    impl MockToken {
+        pub fn balance(_env: Env, _addr: Address) -> i128 {
+            5_000_000
+        }
+    }
+
+    #[test]
+    fn test_weighted_voting_reputation() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+
+        let freelancer_id = t.env.register(MockFreelancer, ());
+        client.set_freelancer_contract(&t.owner, &freelancer_id);
+
+        let prop_id = client.create_proposal(&admin, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        client.vote(&admin, &prop_id, &true);
+
+        let proposal = client.get_proposal(&prop_id);
+        // Base(1) + (20,000,000 / 10,000,000) + (10 * 10) = 1 + 2 + 100 = 103
+        assert_eq!(proposal.votes_for, 103);
+    }
+
+    #[test]
+    fn test_weighted_voting_tokens() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+
+        let token_id = t.env.register(MockToken, ());
+        client.set_token_contract(&t.owner, &token_id);
+
+        let prop_id = client.create_proposal(&admin, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        client.vote(&admin, &prop_id, &true);
+
+        let proposal = client.get_proposal(&prop_id);
+        // Base(1) + (5,000,000 / 1,000,000) = 1 + 5 = 6
+        assert_eq!(proposal.votes_for, 6);
+    }
+
+    #[test]
+    fn test_weighted_voting_combined() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin);
+
+        let freelancer_id = t.env.register(MockFreelancer, ());
+        let token_id = t.env.register(MockToken, ());
+        client.set_freelancer_contract(&t.owner, &freelancer_id);
+        client.set_token_contract(&t.owner, &token_id);
+
+        let prop_id = client.create_proposal(&admin, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        client.vote(&admin, &prop_id, &true);
+
+        let proposal = client.get_proposal(&prop_id);
+        // Base(1) + Rep(2 + 100) + Tok(5) = 1 + 102 + 5 = 108
+        assert_eq!(proposal.votes_for, 108);
+    }
+
+    #[test]
+    fn test_weighted_voting_base() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin1 = Address::generate(&t.env);
+        let admin2 = Address::generate(&t.env);
+        
+        client.add_admin(&t.owner, &admin1);
+        client.add_admin(&t.owner, &admin2);
+
+        let prop_id = client.create_proposal(&admin1, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        client.vote(&admin1, &prop_id, &true);
+        
+        let proposal = client.get_proposal(&prop_id);
+        // Default weight is 1.
+        assert_eq!(proposal.votes_for, 1);
+    }
+
+    #[test]
+    fn test_weighted_voting_with_delegation() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin1 = Address::generate(&t.env);
+        let admin2 = Address::generate(&t.env);
+        let admin3 = Address::generate(&t.env);
+        
+        client.add_admin(&t.owner, &admin1);
+        client.add_admin(&t.owner, &admin2);
+        client.add_admin(&t.owner, &admin3);
+
+        client.delegate_vote(&admin2, &admin1);
+        client.delegate_vote(&admin3, &admin1);
+
+        let prop_id = client.create_proposal(&admin1, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        client.vote(&admin1, &prop_id, &true);
+        
+        let proposal = client.get_proposal(&prop_id);
+        // Default base weights: 1 + 1 + 1 = 3.
+        assert_eq!(proposal.votes_for, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "Delegated")]
+    fn test_delegator_cannot_vote() {
+        let t = TestEnv::new();
+        let client = t.client();
+        let admin1 = Address::generate(&t.env);
+        let admin2 = Address::generate(&t.env);
+        client.add_admin(&t.owner, &admin1);
+        client.add_admin(&t.owner, &admin2);
+        client.delegate_vote(&admin2, &admin1);
+
+        let prop_id = client.create_proposal(&admin1, &ProposalType::AddAdmin(Address::generate(&t.env)));
+        client.vote(&admin2, &prop_id, &true);
+    }
+}
