@@ -219,6 +219,45 @@ impl GovernanceContract {
         true
     }
 
+    /// Check whether an address is an admin.
+    pub fn is_admin(env: Env, addr: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Admin(addr))
+            .unwrap_or(false)
+    }
+
+    /// Returns all active admin addresses.
+    pub fn get_admins(env: Env) -> Vec<Address> {
+        Self::admin_list(env)
+    }
+
+    /// Returns a stored governance parameter value, if configured.
+    pub fn get_parameter(env: Env, parameter: Symbol) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Parameter(parameter))
+    }
+
+    /// Delegate the caller's voting power to another admin.
+    pub fn delegate_vote(env: Env, delegator: Address, delegatee: Address) -> bool {
+        delegator.require_auth();
+
+        if !Self::is_admin(env.clone(), delegator.clone()) {
+            panic!("Only admins can delegate");
+        }
+        if !Self::is_admin(env.clone(), delegatee.clone()) {
+            panic!("Delegatee must be an admin");
+        }
+        if delegator == delegatee {
+            panic!("Cannot delegate to self");
+        }
+
+        Self::assert_no_delegation_cycle(env.clone(), delegator.clone(), delegatee.clone());
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Delegate(delegator.clone()), &delegatee);
     pub fn add_admin(env: Env, owner: Address, admin: Address) -> bool {
         owner.require_auth();
         let stored_owner: Address = env.storage().persistent().get(&DataKey::Owner).expect("Not initialized");
@@ -660,7 +699,7 @@ mod tests {
             TestEnv { env, owner, contract_id }
         }
 
-        fn client(&self) -> GovernanceContractClient {
+        fn client(&self) -> GovernanceContractClient<'_> {
             GovernanceContractClient::new(&self.env, &self.contract_id)
         }
     }
@@ -789,7 +828,7 @@ mod tests {
         let client = t.client();
         let admin = Address::generate(&t.env);
         let target = Address::generate(&t.env);
-        let gov_sym = symbol_short!("gov");
+        let gov_sym = symbol_short!("GOV");
 
         client.add_admin(&t.owner, &admin);
         client.set_timelock_delay(&t.owner, &0u64);
@@ -797,12 +836,22 @@ mod tests {
         // 1. Proposal Created
         let prop_id = client.create_proposal(&admin, &ProposalType::AddAdmin(target.clone()));
         let events = t.env.events().all();
-        assert!(verify_gov_event(&t.env, &gov_sym, &symbol_short!("prop_new"), &events));
+        assert!(verify_gov_event(
+            &t.env,
+            &gov_sym,
+            &symbol_short!("prop_new"),
+            &events
+        ));
 
         // 2. Vote Cast
         client.vote(&admin, &prop_id, &true);
         let events = t.env.events().all();
-        assert!(verify_gov_event(&t.env, &gov_sym, &symbol_short!("voted"), &events));
+        assert!(verify_gov_event(
+            &t.env,
+            &gov_sym,
+            &symbol_short!("voted"),
+            &events
+        ));
 
         // 3. Queue (Phase 1)
         client.execute_proposal(&admin, &prop_id);
@@ -903,7 +952,8 @@ mod tests {
 
         // Parameter Update
         let param = symbol_short!("limit");
-        let prop_id2 = client.create_proposal(&admin, &ProposalType::ParameterUpdate(param.clone(), 100));
+        let prop_id2 =
+            client.create_proposal(&admin, &ProposalType::ParameterUpdate(param.clone(), 100));
         client.vote(&admin, &prop_id2, &true);
         client.execute_proposal(&admin, &prop_id2); // queue
         client.execute_proposal(&admin, &prop_id2); // execute
