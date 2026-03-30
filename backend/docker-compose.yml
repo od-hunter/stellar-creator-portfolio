@@ -1,6 +1,21 @@
 version: '3.8'
 
 services:
+  consul:
+    image: hashicorp/consul:1.17
+    container_name: stellar-consul
+    ports:
+      - "8500:8500"     # HTTP API + UI
+      - "8600:8600/udp" # DNS
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+    volumes:
+      - stellar_consul_data:/consul/data
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     container_name: stellar-postgres
@@ -31,6 +46,15 @@ services:
       timeout: 5s
       retries: 5
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: stellar-jaeger
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317"   # OTLP gRPC collector
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
   api:
     image: rust:1.81-slim
     container_name: stellar-api
@@ -45,13 +69,25 @@ services:
       API_PORT: "3001"
       DATABASE_URL: "postgres://stellar:stellar_dev_password@postgres:5432/stellar_db"
       REDIS_URL: "redis://redis:6379"
+      CONSUL_HTTP_ADDR: "http://consul:8500"
       RUST_LOG: "info,stellar_api=debug"
+      OTLP_ENDPOINT: "http://jaeger:4317"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      consul:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
     command: cargo run --bin stellar-api
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
   indexer:
     image: rust:1.81-slim
@@ -64,11 +100,23 @@ services:
       DATABASE_URL: "postgres://stellar:stellar_dev_password@postgres:5432/stellar_db"
       STELLAR_NETWORK: "testnet"
       STELLAR_RPC_URL: "https://soroban-testnet.stellar.org"
+      CONSUL_HTTP_ADDR: "http://consul:8500"
       RUST_LOG: "info,stellar_indexer=debug"
+      OTLP_ENDPOINT: "http://jaeger:4317"
     depends_on:
       postgres:
         condition: service_healthy
+      consul:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
     command: cargo run --bin stellar-indexer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h postgres -U stellar -d stellar_db || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -107,6 +155,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  stellar_consul_data:
   stellar_postgres_data:
   stellar_redis_data:
   cargo_cache:

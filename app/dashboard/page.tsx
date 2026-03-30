@@ -3,7 +3,7 @@
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Header } from '@/components/header';
+import { Header } from '@/components/layout/header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -53,7 +53,7 @@ export default function DashboardPage() {
     return null;
   }
 
-  const userRole = session.user.role;
+  const userRole = (session?.user as any)?.role || 'USER';
 
   return (
     <div className="min-h-screen bg-background">
@@ -63,7 +63,7 @@ export default function DashboardPage() {
         {/* Welcome Section */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold mb-2">
-            Welcome back, {session.user.name || session.user.email}!
+            Welcome back, {session?.user?.name || session?.user?.email || 'User'}!
           </h1>
           <p className="text-muted-foreground">
             Here&apos;s what&apos;s happening with your account today.
@@ -192,6 +192,48 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
+          {(userRole === 'CREATOR' || userRole === 'ADMIN') && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <FileText className="h-5 w-5" />
+                  My applications
+                </CardTitle>
+                <CardDescription>
+                  Track proposals, timelines, and client messages
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Link href="/dashboard/applications">
+                  <Button variant="outline" className="w-full">
+                    Open applications
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
+          )}
+
+          {(userRole === 'CLIENT' || userRole === 'ADMIN') && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="h-5 w-5" />
+                  Bounty applications
+                </CardTitle>
+                <CardDescription>
+                  Review and accept proposals for your roles
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Link href="/dashboard/bounties">
+                  <Button variant="outline" className="w-full">
+                    Manage applications
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Find Talent Card (for Clients) */}
           {(userRole === 'CLIENT' || userRole === 'ADMIN') && (
             <Card>
@@ -228,6 +270,25 @@ export default function DashboardPage() {
               <Link href="/dashboard/analytics">
                 <Button variant="outline" className="w-full">
                   View Analytics
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <DollarSign className="h-5 w-5" />
+                Payments & escrow
+              </CardTitle>
+              <CardDescription>
+                Fund bounties, subscriptions, and manage escrow receipts
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link href="/dashboard/payments">
+                <Button variant="outline" className="w-full">
+                  Open payments
                 </Button>
               </Link>
             </CardContent>
