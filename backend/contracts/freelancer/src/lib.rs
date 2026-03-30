@@ -29,6 +29,7 @@ pub struct FilterOptions {
     pub verified_only: Option<bool>,
     pub skill: Option<String>,
     pub active_only: Option<bool>,
+<<<<<<< HEAD
 }
 
 #[contracttype]
@@ -38,6 +39,8 @@ pub struct FreelancerReview {
     pub rating: u32,
     pub review_text: String,
     pub timestamp: u64,
+=======
+>>>>>>> main
 }
 
 #[contracttype]
@@ -256,8 +259,35 @@ impl FreelancerContract {
         Self::ensure_escrow_rating_caller(&env, &caller);
         let profile = Self::apply_rating(&env, &freelancer, new_rating);
 
+<<<<<<< HEAD
         let fallback_review = String::from_str(&env, "Rating submitted without review text");
         Self::store_review(&env, &freelancer, &caller, new_rating, &fallback_review);
+=======
+        let registered: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowContract)
+            .expect("Escrow contract not configured");
+        if caller != registered {
+            panic!("Unauthorized: only escrow contract may submit ratings");
+        }
+
+        assert!(new_rating <= 500, "Rating must be between 0 and 500");
+
+        let key = DataKey::Profile(freelancer.clone());
+        let mut profile: FreelancerProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Freelancer not registered");
+
+        let total = (profile.rating as i128) * (profile.total_rating_count as i128);
+        profile.total_rating_count += 1;
+        profile.rating =
+            ((total + new_rating as i128) / profile.total_rating_count as i128) as u32;
+
+        env.storage().persistent().set(&key, &profile);
+>>>>>>> main
 
         env.events().publish(
             (FL, symbol_short!("rate"), freelancer),
@@ -825,6 +855,7 @@ mod tests {
         client.update_rating(&attacker, &freelancer, &300);
     }
 
+<<<<<<< HEAD
     #[test]
     #[should_panic(expected = "Escrow contract not configured")]
     fn test_update_rating_no_escrow_configured() {
@@ -845,6 +876,8 @@ mod tests {
         client.update_rating(&caller, &freelancer, &300);
     }
 
+=======
+>>>>>>> main
     // -------------------------------------------------------------------------
     // Earnings authorization
     // -------------------------------------------------------------------------
