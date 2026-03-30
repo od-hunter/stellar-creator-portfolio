@@ -9,6 +9,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, E
 #[contracttype]
 pub enum DataKey {
     Owner,
+    PendingOwner,
     Admin(Address),
     AdminList,
     Delegate(Address),
@@ -273,6 +274,44 @@ impl GovernanceContract {
         if proposal.votes_for > proposal.votes_against && proposal.votes_for > 0 {
             proposal.status = ProposalStatus::Executed;
             match &proposal.prop_type {
+                ProposalType::AddAdmin(new_admin) => {
+                    Self::add_admin_internal(env.clone(), new_admin.clone());
+                    env.events().publish(
+                        (GOVERNANCE, symbol_short!("adm_add"), new_admin.clone()),
+                        (Symbol::new(&env, "proposal"),),
+                    );
+                }
+                ProposalType::RemoveAdmin(old_admin) => {
+                    Self::remove_admin_internal(env.clone(), old_admin.clone());
+                    env.events().publish(
+                        (GOVERNANCE, symbol_short!("adm_rm"), old_admin.clone()),
+                        (Symbol::new(&env, "proposal"),),
+                    );
+                }
+                ProposalType::FeeChange(new_fee) => {
+                    let max_fee: u32 = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::Parameter(Symbol::new(&env, "max_fee")))
+                        .unwrap_or(1000); // default cap: 10%
+                    assert!(*new_fee <= max_fee, "Fee exceeds maximum allowed");
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::PlatformFee, &new_fee);
+                    env.events().publish(
+                        (GOVERNANCE, symbol_short!("fee_chg"), *new_fee),
+                        (caller.clone(),),
+                    );
+                }
+                ProposalType::ParameterUpdate(param, value) => {
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Parameter(param.clone()), &value);
+                    env.events().publish(
+                        (GOVERNANCE, symbol_short!("param_upd"), param.clone()),
+                        (*value, caller.clone()),
+                    );
+                }
                 ProposalType::AddAdmin(new_admin) => Self::add_admin_internal(env.clone(), new_admin.clone()),
                 ProposalType::RemoveAdmin(old_admin) => Self::remove_admin_internal(env.clone(), old_admin.clone()),
                 ProposalType::FeeChange(new_fee) => env.storage().persistent().set(&DataKey::PlatformFee, &new_fee),
@@ -294,6 +333,51 @@ impl GovernanceContract {
         env.storage().persistent().get(&DataKey::Proposal(proposal_id)).expect("Not found")
     }
 
+    /// Returns the current platform fee in basis points (e.g. 500 = 5%).
+    pub fn get_fee(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFee)
+            .unwrap_or(0)
+    }
+
+    /// Step 1: Current owner nominates a new owner.
+    /// The transfer is not effective until the pending owner calls `accept_ownership`.
+    pub fn transfer_ownership(env: Env, owner: Address, new_owner: Address) -> bool {
+        owner.require_auth();
+        let stored_owner: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Owner)
+            .expect("Governance not initialized");
+        assert!(owner == stored_owner, "Only owner can transfer ownership");
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingOwner, &new_owner);
+        true
+    }
+
+    /// Step 2: Pending owner accepts and becomes the new owner.
+    pub fn accept_ownership(env: Env, new_owner: Address) -> bool {
+        new_owner.require_auth();
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingOwner)
+            .expect("No pending owner");
+        assert!(new_owner == pending, "Caller is not the pending owner");
+        env.storage()
+            .persistent()
+            .set(&DataKey::Owner, &new_owner);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingOwner);
+        true
+    }
+
+    fn add_admin_internal(env: Env, admin: Address) {
+        if Self::is_admin(env.clone(), admin.clone()) {
+            return;
     // ── Internal Helpers ─────────────────────────────────────────────────────
 
     fn get_voter_weight(env: Env, voter: Address) -> i128 {
