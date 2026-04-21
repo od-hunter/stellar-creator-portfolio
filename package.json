@@ -7,10 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "frontend:orbit-check": "pnpm lint",
-    "backend:clippy": "cd backend && rustup component add clippy && cargo clippy --workspace --all-targets --all-features -- -D warnings",
-    "smart-contract:clippy": "cd backend/contracts && rustup component add clippy && cargo clippy --workspace --all-targets --all-features -- -D warnings",
-    "cli-checks": "pnpm run frontend:orbit-check && pnpm run backend:clippy && pnpm run smart-contract:clippy"
+    "check-all": "make check-all",
+    "check-backend": "make check-backend",
+    "check-contracts": "make check-contracts",
+    "check-frontend": "make check-frontend"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
