@@ -96,6 +96,24 @@ pub struct MfaVerifyResponse {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct VerifySignatureRequest {
+    pub public_key: String,
+    pub signature: String,
+    pub message: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct VerifySignatureResponse {
+    pub token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: String,
+    pub exp: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ApiResponse<T> {
     pub success: bool,
     pub data: Option<T>,
@@ -213,6 +231,49 @@ async fn get_challenge() -> HttpResponse {
     HttpResponse::Ok().json(ApiResponse::ok(ChallengeResponse { nonce }))
 }
 
+async fn verify_auth_signature(body: web::Json<VerifySignatureRequest>) -> HttpResponse {
+    tracing::info!("Verifying auth signature for public key: {}", body.public_key);
+    
+    let pub_key_bytes = match hex::decode(&body.public_key) {
+        Ok(b) => b,
+        Err(_) => return HttpResponse::BadRequest().json(ApiResponse::<VerifySignatureResponse>::err("Invalid hex in public_key".to_string())),
+    };
+
+    let sig_bytes = match hex::decode(&body.signature) {
+        Ok(b) => b,
+        Err(_) => return HttpResponse::BadRequest().json(ApiResponse::<VerifySignatureResponse>::err("Invalid hex in signature".to_string())),
+    };
+
+    match verify_signature(&pub_key_bytes, &sig_bytes, body.message.as_bytes()) {
+        Ok(true) => {
+            let expiration = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs() as usize + 24 * 3600;
+
+            let claims = Claims {
+                sub: body.public_key.clone(),
+                exp: expiration,
+            };
+
+            let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "default_secret_for_development_only".to_string());
+            
+            match jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &jsonwebtoken::EncodingKey::from_secret(jwt_secret.as_ref())) {
+                Ok(token) => {
+                    HttpResponse::Ok().json(ApiResponse::ok(VerifySignatureResponse { token }))
+                }
+                Err(e) => {
+                    tracing::error!("JWT encoding error: {}", e);
+                    HttpResponse::InternalServerError().json(ApiResponse::<VerifySignatureResponse>::err("Failed to generate token".to_string()))
+                }
+            }
+        }
+        Ok(false) | Err(_) => {
+            HttpResponse::Unauthorized().json(ApiResponse::<VerifySignatureResponse>::err("Invalid signature".to_string()))
+        }
+    }
+}
+
 async fn health() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
         "status": "healthy",
@@ -312,6 +373,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::NormalizePath::trim())
             .route("/health", web::get().to(health))
             .route("/api/auth/challenge", web::get().to(get_challenge))
+            .route("/api/auth/verify", web::post().to(verify_auth_signature))
             .route("/api/auth/mfa/setup", web::post().to(setup_mfa))
             .route("/api/auth/mfa/verify", web::post().to(verify_mfa))
             .route("/api/auth/mfa/backup-codes", web::post().to(generate_backup_codes))
@@ -480,5 +542,36 @@ mod tests {
         sig[0] ^= 0xFF; // flip bits in first byte
         let result = verify_signature(&pub_key, &sig, message);
         assert_eq!(result, Err(SigError::VerificationFailed));
+    }
+
+    #[actix_web::test]
+    async fn test_verify_auth_signature_endpoint() {
+        use actix_web::test;
+        let app = test::init_service(
+            App::new().route("/api/auth/verify", web::post().to(verify_auth_signature)),
+        )
+        .await;
+
+        let message = b"stellar-auth-challenge-nonce";
+        let (pub_key_bytes, sig_bytes) = make_test_sig(message);
+
+        let req_body = VerifySignatureRequest {
+            public_key: hex::encode(pub_key_bytes),
+            signature: hex::encode(sig_bytes),
+            message: String::from_utf8(message.to_vec()).unwrap(),
+        };
+
+        let req = test::TestRequest::post()
+            .uri("/api/auth/verify")
+            .set_json(&req_body)
+            .to_request();
+            
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["success"], true);
+        let token = body["data"]["token"].as_str().expect("token must be a string");
+        assert!(token.starts_with("eyJ")); // JWT header
     }
 }
