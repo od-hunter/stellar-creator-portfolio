@@ -147,6 +147,25 @@ pub struct ReviewSubmission {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct EscrowCreateRequest {
+    #[serde(rename = "bountyId")]
+    pub bounty_id: String,
+    #[serde(rename = "payerAddress")]
+    pub payer_address: String,
+    #[serde(rename = "payeeAddress")]
+    pub payee_address: String,
+    pub amount: i64,
+    pub token: String,
+    pub timelock: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct EscrowRefundRequest {
+    #[serde(rename = "authorizerAddress")]
+    pub authorizer_address: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct FreelancerRegistration {
     pub name: String,
     pub discipline: String,
@@ -716,6 +735,94 @@ async fn release_escrow(path: web::Path<u64>) -> HttpResponse {
         .json(response)
 }
 
+/// Create a new escrow
+async fn create_escrow(body: web::Json<EscrowCreateRequest>) -> HttpResponse {
+    tracing::info!("Creating escrow for bounty: {}", body.bounty_id);
+
+    let mut field_errors: Vec<FieldError> = Vec::new();
+    if body.bounty_id.trim().is_empty() {
+        field_errors.push(FieldError { field: "bountyId".into(), message: "bountyId is required".into() });
+    }
+    if body.payer_address.trim().is_empty() {
+        field_errors.push(FieldError { field: "payerAddress".into(), message: "payerAddress is required".into() });
+    }
+    if body.payee_address.trim().is_empty() {
+        field_errors.push(FieldError { field: "payeeAddress".into(), message: "payeeAddress is required".into() });
+    }
+    if body.amount <= 0 {
+        field_errors.push(FieldError { field: "amount".into(), message: "amount must be positive".into() });
+    }
+    if body.token.trim().is_empty() {
+        field_errors.push(FieldError { field: "token".into(), message: "token is required".into() });
+    }
+    if !field_errors.is_empty() {
+        let resp: ApiResponse<()> = ApiResponse::err(ApiError::with_field_errors(
+            ApiErrorCode::ValidationError,
+            "Validation failed",
+            field_errors,
+        ));
+        return HttpResponse::UnprocessableEntity()
+            .content_type("application/json")
+            .json(resp);
+    }
+
+    let escrow_id: u64 = 1;
+    let response: ApiResponse<serde_json::Value> = ApiResponse::ok(
+        serde_json::json!({
+            "escrowId": escrow_id.to_string(),
+            "txHash": format!("tx_escrow_{}", escrow_id),
+            "operation": "deposit",
+            "status": "pending",
+            "timestamp": chrono_now()
+        }),
+        Some("Escrow created successfully".to_string()),
+    );
+
+    HttpResponse::Created()
+        .content_type("application/json")
+        .json(response)
+}
+
+/// Refund escrow to payer (work rejected or cancelled)
+async fn refund_escrow(
+    path: web::Path<u64>,
+    body: web::Json<EscrowRefundRequest>,
+) -> HttpResponse {
+    let escrow_id = path.into_inner();
+    tracing::info!("Refunding escrow {} to {}", escrow_id, body.authorizer_address);
+
+    if body.authorizer_address.trim().is_empty() {
+        let resp: ApiResponse<()> = ApiResponse::err(ApiError::with_field_errors(
+            ApiErrorCode::ValidationError,
+            "Validation failed",
+            vec![FieldError { field: "authorizerAddress".into(), message: "authorizerAddress is required".into() }],
+        ));
+        return HttpResponse::UnprocessableEntity()
+            .content_type("application/json")
+            .json(resp);
+    }
+
+    let response: ApiResponse<serde_json::Value> = ApiResponse::ok(
+        serde_json::json!({
+            "escrowId": escrow_id.to_string(),
+            "txHash": format!("tx_refund_{}", escrow_id),
+            "operation": "refund",
+            "status": "pending",
+            "timestamp": chrono_now()
+        }),
+        Some("Escrow refunded successfully".to_string()),
+    );
+
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(response)
+}
+
+fn chrono_now() -> String {
+    // Stable timestamp placeholder — real impl would use chrono or time crate
+    "2026-01-01T00:00:00Z".to_string()
+}
+
 // ==================== CORS ====================
 
 /// Build the CORS middleware from environment configuration.
@@ -797,7 +904,9 @@ async fn main() -> std::io::Result<()> {
                     .route("/api/bounties", web::post().to(create_bounty))
                     .route("/api/bounties/{id}/apply", web::post().to(apply_for_bounty))
                     .route("/api/freelancers/register", web::post().to(register_freelancer))
-                    .route("/api/escrow/{id}/release", web::post().to(release_escrow)),
+                    .route("/api/escrow/create", web::post().to(create_escrow))
+                    .route("/api/escrow/{id}/release", web::post().to(release_escrow))
+                    .route("/api/escrow/{id}/refund", web::post().to(refund_escrow)),
             )
     })
     .bind((host.parse::<std::net::IpAddr>().unwrap(), port))?
@@ -1105,7 +1214,9 @@ mod tests {
                 .route("/api/bounties", web::post().to(create_bounty))
                 .route("/api/bounties/{id}/apply", web::post().to(apply_for_bounty))
                 .route("/api/freelancers/register", web::post().to(register_freelancer))
-                .route("/api/escrow/{id}/release", web::post().to(release_escrow)),
+                .route("/api/escrow/create", web::post().to(create_escrow))
+                .route("/api/escrow/{id}/release", web::post().to(release_escrow))
+                .route("/api/escrow/{id}/refund", web::post().to(refund_escrow)),
         )
     }
 
@@ -1508,5 +1619,181 @@ mod tests {
             .map(|e| e["field"].as_str().unwrap())
             .collect();
         assert!(fields.contains(&"proposed_budget"));
+    }
+
+    // ── POST /api/escrow/create ───────────────────────────────────────────────
+
+    fn build_escrow_app() -> actix_web::App<
+        impl actix_web::dev::ServiceFactory<
+            actix_web::dev::ServiceRequest,
+            Config = (),
+            Response = actix_web::dev::ServiceResponse,
+            Error = actix_web::Error,
+            InitError = (),
+        >,
+    > {
+        App::new()
+            .route("/api/escrow/create", web::post().to(create_escrow))
+            .route("/api/escrow/{id}/refund", web::post().to(refund_escrow))
+    }
+
+    #[actix_web::test]
+    async fn create_escrow_without_token_returns_401() {
+        use actix_web::test as awtest;
+        std::env::remove_var("JWT_SECRET");
+
+        let app = awtest::init_service(build_protected_app()).await;
+        let req = awtest::TestRequest::post()
+            .uri("/api/escrow/create")
+            .set_json(serde_json::json!({
+                "bountyId": "b-1",
+                "payerAddress": "GPAYER",
+                "payeeAddress": "GPAYEE",
+                "amount": 1000,
+                "token": "GUSDC"
+            }))
+            .to_request();
+        let resp = awtest::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn create_escrow_with_valid_token_returns_201() {
+        use actix_web::test as awtest;
+        std::env::remove_var("JWT_SECRET");
+        let token = auth::tests::make_token("wallet-1", "creator", 3600);
+
+        let app = awtest::init_service(build_protected_app()).await;
+        let req = awtest::TestRequest::post()
+            .uri("/api/escrow/create")
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(serde_json::json!({
+                "bountyId": "b-1",
+                "payerAddress": "GPAYER",
+                "payeeAddress": "GPAYEE",
+                "amount": 2500,
+                "token": "GUSDC"
+            }))
+            .to_request();
+        let resp = awtest::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::CREATED);
+
+        let body = awtest::read_body(resp).await;
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"]["operation"], "deposit");
+        assert_eq!(json["data"]["status"], "pending");
+        assert!(json["data"]["escrowId"].is_string());
+        assert!(json["data"]["txHash"].is_string());
+    }
+
+    #[actix_web::test]
+    async fn create_escrow_missing_fields_returns_422() {
+        use actix_web::test as awtest;
+        let app = awtest::init_service(build_escrow_app()).await;
+        let req = awtest::TestRequest::post()
+            .uri("/api/escrow/create")
+            .set_json(serde_json::json!({
+                "bountyId": "",
+                "payerAddress": "",
+                "payeeAddress": "",
+                "amount": 0,
+                "token": ""
+            }))
+            .to_request();
+        let resp = awtest::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let body = awtest::read_body(resp).await;
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"]["code"], "VALIDATION_ERROR");
+        let count = json["error"]["fieldErrors"].as_array().unwrap().len();
+        assert_eq!(count, 5);
+    }
+
+    #[actix_web::test]
+    async fn create_escrow_negative_amount_returns_422() {
+        use actix_web::test as awtest;
+        let app = awtest::init_service(build_escrow_app()).await;
+        let req = awtest::TestRequest::post()
+            .uri("/api/escrow/create")
+            .set_json(serde_json::json!({
+                "bountyId": "b-1",
+                "payerAddress": "GPAYER",
+                "payeeAddress": "GPAYEE",
+                "amount": -100,
+                "token": "GUSDC"
+            }))
+            .to_request();
+        let resp = awtest::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let body = awtest::read_body(resp).await;
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let fields: Vec<&str> = json["error"]["fieldErrors"]
+            .as_array().unwrap()
+            .iter()
+            .map(|e| e["field"].as_str().unwrap())
+            .collect();
+        assert!(fields.contains(&"amount"));
+    }
+
+    // ── POST /api/escrow/:id/refund ───────────────────────────────────────────
+
+    #[actix_web::test]
+    async fn refund_escrow_without_token_returns_401() {
+        use actix_web::test as awtest;
+        std::env::remove_var("JWT_SECRET");
+
+        let app = awtest::init_service(build_protected_app()).await;
+        let req = awtest::TestRequest::post()
+            .uri("/api/escrow/5/refund")
+            .set_json(serde_json::json!({ "authorizerAddress": "GPAYER" }))
+            .to_request();
+        let resp = awtest::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn refund_escrow_with_valid_token_returns_200() {
+        use actix_web::test as awtest;
+        std::env::remove_var("JWT_SECRET");
+        let token = auth::tests::make_token("wallet-1", "creator", 3600);
+
+        let app = awtest::init_service(build_protected_app()).await;
+        let req = awtest::TestRequest::post()
+            .uri("/api/escrow/5/refund")
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(serde_json::json!({ "authorizerAddress": "GPAYER123" }))
+            .to_request();
+        let resp = awtest::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+
+        let body = awtest::read_body(resp).await;
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"]["operation"], "refund");
+        assert_eq!(json["data"]["status"], "pending");
+        assert_eq!(json["data"]["escrowId"], "5");
+    }
+
+    #[actix_web::test]
+    async fn refund_escrow_missing_authorizer_returns_422() {
+        use actix_web::test as awtest;
+        let app = awtest::init_service(build_escrow_app()).await;
+        let req = awtest::TestRequest::post()
+            .uri("/api/escrow/5/refund")
+            .set_json(serde_json::json!({ "authorizerAddress": "" }))
+            .to_request();
+        let resp = awtest::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let body = awtest::read_body(resp).await;
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "VALIDATION_ERROR");
+        let fields: Vec<&str> = json["error"]["fieldErrors"]
+            .as_array().unwrap()
+            .iter()
+            .map(|e| e["field"].as_str().unwrap())
+            .collect();
+        assert!(fields.contains(&"authorizerAddress"));
     }
 }
