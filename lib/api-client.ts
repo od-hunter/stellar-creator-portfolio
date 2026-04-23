@@ -20,6 +20,7 @@ import {
   type ReviewSubmission,
   isApiSuccess,
 } from './api-models';
+import { notifyLoadingChange } from '../components/layout-provider';
 
 // ── Error class ───────────────────────────────────────────────────────────────
 
@@ -66,10 +67,12 @@ export async function apiFetch<T>(
     ...(init.headers ?? {}),
   };
 
+  notifyLoadingChange(1);
   let res: Response;
   try {
     res = await fetch(url, { ...init, headers });
   } catch {
+    notifyLoadingChange(-1);
     throw ApiClientError.network();
   }
 
@@ -83,6 +86,8 @@ export async function apiFetch<T>(
       undefined,
       res.status,
     );
+  } finally {
+    notifyLoadingChange(-1);
   }
 
   if (isApiSuccess(envelope)) return envelope.data;
