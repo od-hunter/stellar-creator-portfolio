@@ -9,6 +9,7 @@ use tracing_subscriber;
 mod auth;
 mod reputation;
 mod event_indexer;
+mod verification_rewards;
 
 pub const API_VERSION: &str = "1";
 pub const API_PREFIX: &str = "/api/v1";
