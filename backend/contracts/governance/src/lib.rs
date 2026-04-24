@@ -71,6 +71,10 @@ impl GovernanceContract {
 
         env.storage().persistent().set(&config_key, &config);
 
+        // Extend TTL for config storage (30 days in ledgers)
+        let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
+        env.storage().persistent().extend_ttl(&config_key, ledger_ttl);
+
         true
     }
 
@@ -94,6 +98,10 @@ impl GovernanceContract {
         config.last_updated = env.ledger().timestamp();
 
         env.storage().persistent().set(&config_key, &config);
+
+        // Extend TTL for config storage (30 days in ledgers)
+        let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
+        env.storage().persistent().extend_ttl(&config_key, ledger_ttl);
 
         true
     }
@@ -134,6 +142,11 @@ impl GovernanceContract {
         env.storage()
             .persistent()
             .set(&proposal_counter_key, &counter);
+
+        // Extend TTL for proposal storage (30 days in ledgers)
+        let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
+        env.storage().persistent().extend_ttl(&proposal_key, ledger_ttl);
+        env.storage().persistent().extend_ttl(&proposal_counter_key, ledger_ttl);
 
         proposal_id
     }
@@ -179,6 +192,11 @@ impl GovernanceContract {
         env.storage().persistent().set(&proposal_key, &proposal);
         env.storage().persistent().set(&vote_key, &true);
 
+        // Extend TTL for vote storage (30 days in ledgers)
+        let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
+        env.storage().persistent().extend_ttl(&proposal_key, ledger_ttl);
+        env.storage().persistent().extend_ttl(&vote_key, ledger_ttl);
+
         true
     }
 
@@ -212,6 +230,10 @@ impl GovernanceContract {
         }
 
         env.storage().persistent().set(&proposal_key, &proposal);
+
+        // Extend TTL for proposal storage (30 days in ledgers)
+        let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
+        env.storage().persistent().extend_ttl(&proposal_key, ledger_ttl);
 
         true
     }
