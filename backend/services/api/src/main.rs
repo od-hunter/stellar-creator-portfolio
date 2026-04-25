@@ -5,6 +5,7 @@ use actix_web::body::MessageBody;
 use futures::future::{ok, Ready};
 use serde::{Deserialize, Serialize};
 
+mod analytics;
 mod auth;
 mod reputation;
 mod event_indexer;
