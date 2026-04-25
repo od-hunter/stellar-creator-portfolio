@@ -8,6 +8,7 @@ use tracing_subscriber;
 
 mod auth;
 mod reputation;
+mod muxed;
 
 pub const API_VERSION: &str = "1";
 pub const API_PREFIX: &str = "/api/v1";
