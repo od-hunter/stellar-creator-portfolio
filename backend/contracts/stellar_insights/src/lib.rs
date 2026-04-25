@@ -3,7 +3,7 @@
 extern crate alloc;
 use alloc::format;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Env, String, Symbol};
 
 /// Epoch validation contract for tracking historical data
 #[contracttype]

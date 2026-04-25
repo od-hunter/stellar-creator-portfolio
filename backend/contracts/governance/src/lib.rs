@@ -73,7 +73,7 @@ impl GovernanceContract {
 
         // Extend TTL for config storage (30 days in ledgers)
         let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
-        env.storage().persistent().extend_ttl(&config_key, ledger_ttl);
+        env.storage().persistent().extend_ttl(&config_key, 4096, ledger_ttl);
 
         true
     }
@@ -101,7 +101,7 @@ impl GovernanceContract {
 
         // Extend TTL for config storage (30 days in ledgers)
         let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
-        env.storage().persistent().extend_ttl(&config_key, ledger_ttl);
+        env.storage().persistent().extend_ttl(&config_key, 4096, ledger_ttl);
 
         true
     }
@@ -145,8 +145,8 @@ impl GovernanceContract {
 
         // Extend TTL for proposal storage (30 days in ledgers)
         let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
-        env.storage().persistent().extend_ttl(&proposal_key, ledger_ttl);
-        env.storage().persistent().extend_ttl(&proposal_counter_key, ledger_ttl);
+        env.storage().persistent().extend_ttl(&proposal_key, 4096, ledger_ttl);
+        env.storage().persistent().extend_ttl(&proposal_counter_key, 4096, ledger_ttl);
 
         proposal_id
     }
@@ -194,8 +194,8 @@ impl GovernanceContract {
 
         // Extend TTL for vote storage (30 days in ledgers)
         let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
-        env.storage().persistent().extend_ttl(&proposal_key, ledger_ttl);
-        env.storage().persistent().extend_ttl(&vote_key, ledger_ttl);
+        env.storage().persistent().extend_ttl(&proposal_key, 4096, ledger_ttl);
+        env.storage().persistent().extend_ttl(&vote_key, 4096, ledger_ttl);
 
         true
     }
@@ -233,7 +233,7 @@ impl GovernanceContract {
 
         // Extend TTL for proposal storage (30 days in ledgers)
         let ledger_ttl = 30 * 24 * 3600 / 5; // ~30 days (5 second blocks)
-        env.storage().persistent().extend_ttl(&proposal_key, ledger_ttl);
+        env.storage().persistent().extend_ttl(&proposal_key, 4096, ledger_ttl);
 
         true
     }
